@@ -251,7 +251,7 @@ Vector3.new(-343.73, 7.77, -1609.55),
 -- CONFIG  (tune these to adjust feel)
 -- ============================================================
 local CFG = {
-	maxSpeed       = 200,
+	maxSpeed       = 220,
 	minSpeed       = 60,
 	minPointDist   = 5.0,
 	lookaheadSteps = 8,
@@ -540,7 +540,7 @@ end
 -- ============================================================
 
 local roundCounter = 0
-local MAX_ROUNDS = 10
+local MAX_ROUNDS = 7
 
 task.spawn(function()
     while true do
