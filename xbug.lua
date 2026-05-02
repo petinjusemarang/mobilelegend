@@ -742,7 +742,7 @@ task.spawn(function()
                         event:FireServer(unpack(args))
                         print("Create Private Server triggered")
                     end)
-                    task.wait(5)
+                    task.wait(5)--
                 end
             end
         end
