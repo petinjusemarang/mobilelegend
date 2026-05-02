@@ -729,7 +729,7 @@ task.spawn(function()
                 pcall(function()
                     local teleportQueue = (syn and syn.queue_on_teleport) or queue_on_teleport or (fluxus and fluxus.queue_on_teleport)
                     if teleportQueue then
-                        teleportQueue('loadstring(game:HttpGet("https://raw.githubusercontent.com/petinjusemarang/tutorialmasak/refs/heads/main/brain.lua"))()')
+                        teleportQueue('loadstring(game:HttpGet("https://raw.githubusercontent.com/petinjusemarang/mobilelegend/refs/heads/main/xbug.lua"))()')
                     end
                 end)
                 
