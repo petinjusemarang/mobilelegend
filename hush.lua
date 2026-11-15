@@ -1,5 +1,5 @@
 --[[
-    HUSH MARKET WATCHER v2.5.6
+    HUSH MARKET WATCHER v2.6.2 MOBILE PORTRAIT TABS
     MARKET ID SCANNER + PRICE WATCHER
 
     FEATURES:
@@ -450,21 +450,34 @@ end
 --==================================================
 
 local function getMarketGrid()
-    local success, grid = pcall(function()
-        return PlayerGui
-            :WaitForChild("HushMenu", 5)
-            .Root
-            .Pages
-            .Page_market
-            .Market
-            .Content
-            .Inner
-            .Body
-            .Sub_browse
-            .Grid
-    end)
+    -- Mobile hierarchy confirmed by the diagnostic report:
+    -- PlayerGui.HushMenu.Root.MenuShell.Pages.Page_market...
+    -- Keep the older PC path as a fallback for compatibility.
+    local function walk(root, names)
+        local current = root
+        for _, name in ipairs(names) do
+            if not current then return nil end
+            current = current:FindFirstChild(name)
+        end
+        return current
+    end
 
-    if success then
+    local mobilePath = {
+        "HushMenu", "Root", "MenuShell", "Pages", "Page_market",
+        "Market", "Content", "Inner", "Body", "Sub_browse", "Grid"
+    }
+    local legacyPath = {
+        "HushMenu", "Root", "Pages", "Page_market",
+        "Market", "Content", "Inner", "Body", "Sub_browse", "Grid"
+    }
+
+    local grid = walk(PlayerGui, mobilePath)
+    if grid and grid:IsA("ScrollingFrame") then
+        return grid
+    end
+
+    grid = walk(PlayerGui, legacyPath)
+    if grid and (grid:IsA("ScrollingFrame") or grid:IsA("Frame")) then
         return grid
     end
 
@@ -515,67 +528,89 @@ local function scanMarketGrid()
 
     GridScanning = true
 
-    local grid = getMarketGrid()
+    local ok, foundOrError = pcall(function()
+        local grid = getMarketGrid()
 
-    if not grid then
-        GridStatusText.Text = "GRID: NOT FOUND"
-        GridStatusText.TextColor3 = COLORS.Red
-        GridScanning = false
-        return
-    end
+        if not grid then
+            if GridStatusText then
+                GridStatusText.Text = "GRID: NOT FOUND - OPEN MARKET"
+                GridStatusText.TextColor3 = COLORS.Red
+            end
+            return nil
+        end
 
-    local before = #DiscoveredIDs
-    local foundThisScan = 0
+        local before = #DiscoveredIDs
+        local foundThisScan = 0
+        local cardCount = 0
 
-    for _, card in ipairs(grid:GetChildren()) do
-        -- Card structure observed:
-        -- Grid > Card > Icon > Icon > item_id
-        local outerIcon = card:FindFirstChild("Icon")
+        -- Mobile cards are direct TextButton children of the ScrollingFrame.
+        -- Their ItemId attribute is the authoritative ID source.
+        for _, card in ipairs(grid:GetChildren()) do
+            if card:IsA("TextButton") then
+                cardCount = cardCount + 1
+                local itemId = card:GetAttribute("ItemId")
 
-        if outerIcon then
-            local innerIcon = outerIcon:FindFirstChild("Icon")
-
-            if innerIcon then
-                -- The detector also found ItemId attributes on cards.
-                local attributeID = card:GetAttribute("ItemId")
-
-                if attributeID then
-                    if addDiscoveredID(tostring(attributeID)) then
-                        foundThisScan = foundThisScan + 1
+                -- Fallback: some builds may expose ItemId only on the preview Model.
+                if type(itemId) ~= "string" or itemId == "" then
+                    local outerIcon = card:FindFirstChild("Icon")
+                    local viewportFrame = outerIcon and outerIcon:FindFirstChild("Icon")
+                    if viewportFrame then
+                        for _, preview in ipairs(viewportFrame:GetChildren()) do
+                            if preview:IsA("Model") then
+                                local modelId = preview:GetAttribute("ItemId")
+                                if type(modelId) == "string" and modelId ~= "" then
+                                    itemId = modelId
+                                    break
+                                end
+                            end
+                        end
                     end
                 end
 
-                -- Item IDs are also represented by child instance names.
-                for _, itemObject in ipairs(innerIcon:GetChildren()) do
-                    if addDiscoveredID(itemObject.Name) then
-                        foundThisScan = foundThisScan + 1
-                    end
+                if type(itemId) == "string" and addDiscoveredID(itemId) then
+                    foundThisScan = foundThisScan + 1
                 end
             end
         end
-    end
 
-    table.sort(DiscoveredIDs)
+        table.sort(DiscoveredIDs)
 
-    local added = #DiscoveredIDs - before
+        local added = #DiscoveredIDs - before
+        if IDCountText then
+            IDCountText.Text = "DISCOVERED IDS: " .. tostring(#DiscoveredIDs)
+        end
 
-    IDCountText.Text = "DISCOVERED IDS: " .. tostring(#DiscoveredIDs)
+        if GridStatusText then
+            GridStatusText.Text = "GRID: CONNECTED | CARDS: " .. tostring(cardCount)
+            GridStatusText.TextColor3 = COLORS.Green
+        end
 
-    GridStatusText.Text = "GRID: CONNECTED"
-    GridStatusText.TextColor3 = COLORS.Green
+        if added > 0 then
+            savePersistentState()
+            log(
+                "Market Grid updated: +" .. tostring(added) ..
+                " new IDs (" .. tostring(#DiscoveredIDs) .. " total)",
+                "ID SCANNER"
+            )
+        elseif cardCount == 0 then
+            log("Market Grid found, but no item cards are loaded yet", "ID SCANNER")
+        end
 
-    if added > 0 then
-        savePersistentState()
-        log(
-            "Market Grid updated: +" .. tostring(added) ..
-            " new IDs (" .. tostring(#DiscoveredIDs) .. " total)",
-            "ID SCANNER"
-        )
-    end
+        return foundThisScan
+    end)
 
     GridScanning = false
 
-    return foundThisScan
+    if not ok then
+        if GridStatusText then
+            GridStatusText.Text = "GRID SCAN ERROR"
+            GridStatusText.TextColor3 = COLORS.Red
+        end
+        log("Grid scan error: " .. tostring(foundOrError), "ERROR")
+        return nil
+    end
+
+    return foundOrError
 end
 
 --==================================================
@@ -1204,7 +1239,7 @@ Title.Size = UDim2.new(1, -150, 0, 22)
 
 local Subtitle = makeLabel(
     TitleBar,
-    "MARKET ID SCANNER  /  PRICE MONITOR  /  AUTO BUY  /  ANTI-AFK  /  PURCHASE REPORT  /  V2.6.0 MOBILE",
+    "MARKET ID SCANNER  /  PRICE MONITOR  /  AUTO BUY  /  ANTI-AFK  /  PURCHASE REPORT  /  V2.6.1 MOBILE",
     9,
     COLORS.Muted,
     false
@@ -2101,7 +2136,7 @@ if IsMobilePortrait then
     StatusBar.Position = UDim2.fromOffset(0, 0)
     StatusBar.Size = UDim2.new(1, 0, 0, 32)
     ControlPanel.Position = UDim2.fromOffset(0, 38)
-    ControlPanel.Size = UDim2.new(1, 0, 0, 112)
+    ControlPanel.Size = UDim2.new(1, 0, 0, 146)
 
     local gap = 5
     local inputWidth = math.floor((W - 4 * gap - 8) / 4)
@@ -2127,34 +2162,35 @@ if IsMobilePortrait then
         x = x + width + 4
     end
 
+    -- Row 3: log and anti-AFK controls.
     local bottomButtons = {
-        {CopyLogButton, 58}, {ClearLogButton, 58}
+        {CopyLogButton, 64}, {ClearLogButton, 64}
     }
     x = 5
     for _, entry in ipairs(bottomButtons) do
         local button, width = entry[1], entry[2]
         button.Position = UDim2.fromOffset(x, 78)
-        button.Size = UDim2.fromOffset(width, 28)
+        button.Size = UDim2.fromOffset(width, 27)
         button.TextSize = 8
-        x = x + width + 3
+        x = x + width + 5
     end
     AntiAFKButton.Position = UDim2.fromOffset(x, 78)
-    AntiAFKButton.Size = UDim2.fromOffset(72, 28)
+    AntiAFKButton.Size = UDim2.fromOffset(82, 27)
     AntiAFKButton.TextSize = 7
-    x = x + 75
-    DelayLabel.Position = UDim2.fromOffset(x, 78)
-    DelayLabel.Size = UDim2.fromOffset(31, 28)
-    DelayLabel.TextSize = 7
-    x = x + 32
-    RequestDelayBox.Position = UDim2.fromOffset(x, 78)
-    RequestDelayBox.Size = UDim2.fromOffset(34, 28)
-    x = x + 37
-    SaveDelayButton.Position = UDim2.fromOffset(x, 78)
-    SaveDelayButton.Size = UDim2.fromOffset(45, 28)
-    SaveDelayButton.TextSize = 7
+
+    -- Row 4: compact delay setting, kept on-screen on narrow phones.
+    DelayLabel.Text = "DELAY SEC"
+    DelayLabel.Position = UDim2.fromOffset(5, 112)
+    DelayLabel.Size = UDim2.fromOffset(58, 27)
+    DelayLabel.TextSize = 8
+    RequestDelayBox.Position = UDim2.fromOffset(67, 112)
+    RequestDelayBox.Size = UDim2.fromOffset(58, 27)
+    SaveDelayButton.Position = UDim2.fromOffset(130, 112)
+    SaveDelayButton.Size = UDim2.fromOffset(52, 27)
+    SaveDelayButton.TextSize = 8
 
     -- Stack Market Grid and Watchlist vertically; each list remains independently scrollable.
-    IDPanel.Position = UDim2.fromOffset(0, 158)
+    IDPanel.Position = UDim2.fromOffset(0, 192)
     IDPanel.Size = UDim2.new(1, 0, 0, 290)
     ScanGridButton.Position = UDim2.new(1, -176, 0, 5)
     ScanGridButton.Size = UDim2.fromOffset(82, 27)
@@ -2165,23 +2201,23 @@ if IsMobilePortrait then
     IDFrame.Position = UDim2.fromOffset(8, 100)
     IDFrame.Size = UDim2.new(1, -16, 1, -108)
 
-    WatchPanel.Position = UDim2.fromOffset(0, 456)
+    WatchPanel.Position = UDim2.fromOffset(0, 490)
     WatchPanel.Size = UDim2.new(1, 0, 0, 390)
     WatchlistFrame.Position = UDim2.fromOffset(8, 30)
     WatchlistFrame.Size = UDim2.new(1, -16, 1, -38)
 
-    ActivityTab.Position = UDim2.fromOffset(0, 854)
-    PurchaseTab.Position = UDim2.fromOffset(122, 854)
-    LogFrame.Position = UDim2.fromOffset(0, 891)
+    ActivityTab.Position = UDim2.fromOffset(0, 888)
+    PurchaseTab.Position = UDim2.fromOffset(122, 888)
+    LogFrame.Position = UDim2.fromOffset(0, 925)
     LogFrame.Size = UDim2.new(1, 0, 0, 360)
-    PurchasePanel.Position = UDim2.fromOffset(0, 891)
+    PurchasePanel.Position = UDim2.fromOffset(0, 925)
     PurchasePanel.Size = UDim2.new(1, 0, 0, 430)
     PurchaseSummary.Size = UDim2.new(1, -16, 0, 72)
     ReportActions.Position = UDim2.fromOffset(8, 110)
     PurchaseList.Position = UDim2.fromOffset(8, 148)
     PurchaseList.Size = UDim2.new(1, -16, 1, -156)
 
-    Content.CanvasSize = UDim2.new(0, 0, 0, 1330)
+    Content.CanvasSize = UDim2.new(0, 0, 0, 1365)
     Content.ScrollingEnabled = true
 
     -- Make each Watchlist card touch-friendly and wrap its controls onto a bottom row.
@@ -2228,6 +2264,80 @@ if IsMobilePortrait then
         end
     end
     refreshItems()
+
+    -- Compact portrait tab navigation: GRID / WATCH / LOG / BUYS.
+    -- Keep status + controls fixed; only the selected content panel is visible.
+    Content.ScrollingEnabled = false
+    Content.CanvasSize = UDim2.new(0, 0, 0, 0)
+    Content.AutomaticCanvasSize = Enum.AutomaticSize.None
+    Content.ClipsDescendants = true
+
+    local tabY = 192
+    local pageY = 230
+    local pageHeight = math.max(170, MobileMainHeight - 70 - pageY - 8)
+    local tabGap = 4
+    local tabWidth = math.floor((W - tabGap * 3) / 4)
+
+    local TabBar = create("Frame", {
+        Name = "MobileTabBar",
+        BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(0, tabY),
+        Size = UDim2.new(1, 0, 0, 32)
+    }, Content)
+
+    local function placePage(panel)
+        panel.Position = UDim2.fromOffset(0, pageY)
+        panel.Size = UDim2.new(1, 0, 0, pageHeight)
+    end
+
+    placePage(IDPanel)
+    placePage(WatchPanel)
+    placePage(LogFrame)
+    placePage(PurchasePanel)
+
+    -- Fit each panel's internal scrolling region to the available portrait page.
+    IDFrame.Position = UDim2.fromOffset(8, 100)
+    IDFrame.Size = UDim2.new(1, -16, 1, -108)
+    WatchlistFrame.Position = UDim2.fromOffset(8, 30)
+    WatchlistFrame.Size = UDim2.new(1, -16, 1, -38)
+    PurchaseList.Position = UDim2.fromOffset(8, 148)
+    PurchaseList.Size = UDim2.new(1, -16, 1, -156)
+
+    ActivityTab.Visible = false
+    PurchaseTab.Visible = false
+    IDPanel.Visible = true
+    WatchPanel.Visible = false
+    LogFrame.Visible = false
+    PurchasePanel.Visible = false
+
+    local mobileTabs = {}
+    local function showMobileTab(which)
+        IDPanel.Visible = which == "GRID"
+        WatchPanel.Visible = which == "WATCH"
+        LogFrame.Visible = which == "LOG"
+        PurchasePanel.Visible = which == "BUYS"
+        for name, button in pairs(mobileTabs) do
+            button.BackgroundColor3 = name == which and COLORS.Accent or COLORS.Panel2
+            button.TextColor3 = name == which and COLORS.Text or COLORS.Muted
+        end
+    end
+
+    local tabNames = {"GRID", "WATCH", "LOG", "BUYS"}
+    for index, name in ipairs(tabNames) do
+        local button = makeButton(
+            TabBar,
+            name,
+            function() showMobileTab(name) end,
+            index == 1 and COLORS.Accent or COLORS.Panel2,
+            tabWidth
+        )
+        button.Position = UDim2.fromOffset((index - 1) * (tabWidth + tabGap), 0)
+        button.Size = UDim2.fromOffset(tabWidth, 32)
+        button.TextSize = 9
+        mobileTabs[name] = button
+    end
+
+    showMobileTab("GRID")
 end
 
 --==================================================
@@ -2239,7 +2349,7 @@ refreshIDList()
 refreshPurchaseReport()
 savePersistentState()
 
-log("HUSH MARKET WATCHER v2.6.0 MOBILE initialized", "SYSTEM")
+log("HUSH MARKET WATCHER v2.6.2 MOBILE PORTRAIT TABS initialized", "SYSTEM")
 if type(writefile) == "function" and SavedState then
     log("Saved settings restored from " .. SAVE_FILE, "SAVE")
 elseif type(writefile) == "function" then
