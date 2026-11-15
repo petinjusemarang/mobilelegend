@@ -1,5 +1,5 @@
 --[[
-    HUSH MARKET WATCHER v2.5.1
+    HUSH MARKET WATCHER v2.5.6
     MARKET ID SCANNER + PRICE WATCHER
 
     FEATURES:
@@ -43,10 +43,10 @@ local PlayerGui = Player:WaitForChild("PlayerGui")
 --==================================================
 
 local CONFIG = {
-    ScanInterval = 8,
-    GridRefreshInterval = 2,
-    RequestDelay = 0.4,
-    AutoBuyCooldown = 5,
+    ScanInterval = 1,
+    GridRefreshInterval = 1,
+    RequestDelay = 1, -- seconds between each enabled Watchlist item scan
+    AutoBuyCooldown = 1,
 
     DefaultWatchlist = {
         {
@@ -154,12 +154,14 @@ local function savePersistentState()
         watchlist = {},
         discoveredIDs = DiscoveredIDs,
         antiAFK = AntiAFKEnabled,
+        requestDelay = CONFIG.RequestDelay,
         purchases = PurchaseRecords or SavedPurchaseRecords or {}
     }
     for _, item in ipairs(Watchlist) do
         table.insert(state.watchlist, {
             id = item.id, name = item.name, maxPrice = item.maxPrice,
-            enabled = item.enabled == true, autoBuy = item.autoBuy == true
+            enabled = item.enabled == true, autoBuy = item.autoBuy == true,
+            priority = item.priority == true
         })
     end
     local ok, encoded = pcall(function() return HttpService:JSONEncode(state) end)
@@ -168,6 +170,10 @@ local function savePersistentState()
 end
 
 SavedState = loadSavedState()
+-- Start each execution with the requested 1-second item delay.
+-- Older saved values are intentionally not restored, so a previous 2s/3s
+-- setting cannot silently override this configuration.
+CONFIG.RequestDelay = 1
 if SavedState and type(SavedState.watchlist) == "table" then
     for _, item in ipairs(SavedState.watchlist) do
         if type(item) == "table" and type(item.id) == "string" and item.id ~= "" then
@@ -175,6 +181,7 @@ if SavedState and type(SavedState.watchlist) == "table" then
                 id = item.id, name = tostring(item.name or item.id),
                 maxPrice = tonumber(item.maxPrice) or 1,
                 enabled = item.enabled == true, autoBuy = item.autoBuy == true,
+                priority = item.priority == true,
                 lastBuyAttempt = 0
             })
         end
@@ -310,7 +317,7 @@ local function makeButton(parent, text, callback, color, width)
     corner(button, 6)
     stroke(button)
 
-    button.MouseButton1Click:Connect(callback)
+    button.Activated:Connect(callback)
 
     return button
 end
@@ -430,6 +437,7 @@ local function addWatchlistItem(itemId, itemName, maxPrice)
         maxPrice = maxPrice,
         enabled = true,
         autoBuy = false,
+        priority = false,
         lastBuyAttempt = 0
     })
 
@@ -811,7 +819,7 @@ local function refreshItems()
         )
 
         nameLabel.Position = UDim2.fromOffset(8, 3)
-        nameLabel.Size = UDim2.new(1, -300, 0, 18)
+        nameLabel.Size = UDim2.new(1, -340, 0, 18)
 
         local lowestText = "LOWEST: --"
         local countText = "LISTINGS: --"
@@ -861,6 +869,32 @@ local function refreshItems()
 
         targetLabel.Position = UDim2.fromOffset(8, 45)
         targetLabel.Size = UDim2.new(1, -300, 0, 17)
+
+        local priorityButton = makeButton(
+            card,
+            item.priority and "★" or "☆",
+            function()
+                if item.priority then
+                    -- Clicking the active star clears the single priority slot.
+                    item.priority = false
+                    log("Priority cleared: " .. item.name, "PRIORITY")
+                else
+                    -- Only one Watchlist item may be Priority at a time.
+                    for _, watchItem in ipairs(Watchlist) do
+                        watchItem.priority = false
+                    end
+                    item.priority = true
+                    log("Priority set: " .. item.name, "PRIORITY")
+                end
+
+                savePersistentState()
+                refreshItems()
+            end,
+            item.priority and COLORS.Orange or COLORS.Panel,
+            30
+        )
+
+        priorityButton.Position = UDim2.new(1, -294, 0, 5)
 
         local enabledButton = makeButton(
             card,
@@ -991,6 +1025,42 @@ local function scanItem(item)
     end
 end
 
+-- Build an interleaved scan queue:
+-- normal item -> every enabled priority item -> next normal item.
+-- If the Watchlist contains only priority items, scan each once per cycle.
+local function buildScanOrder()
+    local normalItems = {}
+    local priorityItems = {}
+
+    for _, item in ipairs(Watchlist) do
+        if item.enabled then
+            if item.priority then
+                table.insert(priorityItems, item)
+            else
+                table.insert(normalItems, item)
+            end
+        end
+    end
+
+    if #normalItems == 0 then
+        return priorityItems
+    end
+
+    if #priorityItems == 0 then
+        return normalItems
+    end
+
+    local ordered = {}
+    for _, normalItem in ipairs(normalItems) do
+        table.insert(ordered, normalItem)
+        for _, priorityItem in ipairs(priorityItems) do
+            table.insert(ordered, priorityItem)
+        end
+    end
+
+    return ordered
+end
+
 local function performScan()
     if Scanning then
         return
@@ -1021,16 +1091,15 @@ local function performScan()
 
     log("Market scan started", "SYSTEM")
 
-    for _, item in ipairs(Watchlist) do
+    local scanOrder = buildScanOrder()
+    for _, item in ipairs(scanOrder) do
         if not ScreenGui.Parent then
             break
         end
 
-        if item.enabled then
-            scanItem(item)
-            refreshItems()
-            task.wait(CONFIG.RequestDelay)
-        end
+        scanItem(item)
+        refreshItems()
+        task.wait(CONFIG.RequestDelay)
     end
 
     Scanning = false
@@ -1085,6 +1154,10 @@ end
 -- MAIN GUI
 --==================================================
 
+local camera = workspace.CurrentCamera
+local viewport = camera and camera.ViewportSize or Vector2.new(1280, 720)
+local IsMobilePortrait = viewport.X < viewport.Y or viewport.X < 800
+
 ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "HushAutoSniper"
 ScreenGui.ResetOnSpawn = false
@@ -1093,11 +1166,13 @@ ScreenGui.DisplayOrder = 999999
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.Parent = PlayerGui
 
+local MobileMainWidth = math.max(300, viewport.X - 12)
+local MobileMainHeight = math.max(420, viewport.Y - 18)
 Main = create("Frame", {
     Name = "Main",
     BackgroundColor3 = COLORS.Background,
-    Size = UDim2.fromOffset(1120, 800),
-    Position = UDim2.new(0.5, -560, 0.5, -400),
+    Size = IsMobilePortrait and UDim2.fromOffset(MobileMainWidth, MobileMainHeight) or UDim2.fromOffset(1120, 800),
+    Position = IsMobilePortrait and UDim2.new(0.5, -MobileMainWidth / 2, 0.5, -MobileMainHeight / 2) or UDim2.new(0.5, -560, 0.5, -400),
     BorderSizePixel = 0
 }, ScreenGui)
 
@@ -1129,7 +1204,7 @@ Title.Size = UDim2.new(1, -150, 0, 22)
 
 local Subtitle = makeLabel(
     TitleBar,
-    "MARKET ID SCANNER  /  PRICE MONITOR  /  AUTO BUY  /  ANTI-AFK  /  PURCHASE REPORT  /  V2.5.2 MOBILE",
+    "MARKET ID SCANNER  /  PRICE MONITOR  /  AUTO BUY  /  ANTI-AFK  /  PURCHASE REPORT  /  V2.6.0 MOBILE",
     9,
     COLORS.Muted,
     false
@@ -1137,28 +1212,18 @@ local Subtitle = makeLabel(
 
 Subtitle.Position = UDim2.fromOffset(17, 25)
 
-Content = create("ScrollingFrame", {
+Content = create(IsMobilePortrait and "ScrollingFrame" or "Frame", {
     Name = "Content",
     BackgroundTransparency = 1,
-    Position = UDim2.fromOffset(12, 58),
-    Size = UDim2.new(1, -24, 1, -70),
-    BorderSizePixel = 0,
-    ScrollBarThickness = 5,
-    ScrollBarImageColor3 = COLORS.Accent,
-    ScrollingDirection = Enum.ScrollingDirection.Y,
-    CanvasSize = UDim2.new(0, 0, 0, 0)
+    Position = UDim2.fromOffset(IsMobilePortrait and 8 or 12, 58),
+    Size = UDim2.new(1, IsMobilePortrait and -16 or -24, 1, -70),
+    BorderSizePixel = 0
 }, Main)
-
-local Viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
-local IsMobilePortrait = Viewport.X < 850 and Viewport.Y >= Viewport.X
-local ExpandedMainSize = IsMobilePortrait
-    and UDim2.fromOffset(math.max(300, Viewport.X - 16), math.max(420, Viewport.Y - 48))
-    or UDim2.fromOffset(1120, 800)
-
-Main.Size = ExpandedMainSize
 if IsMobilePortrait then
-    Main.Position = UDim2.new(0.5, 0, 0.5, 0)
-    Main.AnchorPoint = Vector2.new(0.5, 0.5)
+    Content.ScrollBarThickness = 5
+    Content.ScrollBarImageColor3 = COLORS.Accent
+    Content.CanvasSize = UDim2.new(0, 0, 0, 0)
+    Content.AutomaticCanvasSize = Enum.AutomaticSize.None
 end
 
 local MinimizeButton = makeButton(
@@ -1169,11 +1234,11 @@ local MinimizeButton = makeButton(
 
         if minimized then
             Main:SetAttribute("Minimized", false)
-            Main.Size = ExpandedMainSize
+            Main.Size = IsMobilePortrait and UDim2.fromOffset(MobileMainWidth, MobileMainHeight) or UDim2.fromOffset(1120, 800)
             Content.Visible = true
         else
             Main:SetAttribute("Minimized", true)
-            Main.Size = UDim2.new(1, 0, 0, 48)
+            Main.Size = IsMobilePortrait and UDim2.fromOffset(MobileMainWidth, 48) or UDim2.fromOffset(1120, 48)
             Content.Visible = false
         end
     end,
@@ -1407,6 +1472,48 @@ local ClearLogButton = makeButton(
 )
 
 ClearLogButton.Position = UDim2.fromOffset(431, 43)
+
+-- Per-item Watchlist scan delay (seconds). Editable and persisted across sessions.
+local DelayLabel = makeLabel(ControlPanel, "ITEM DELAY (SEC)", 9, COLORS.Muted, true)
+DelayLabel.Position = UDim2.fromOffset(642, 43)
+DelayLabel.Size = UDim2.fromOffset(82, 30)
+
+local RequestDelayBox = makeTextBox(ControlPanel, "Seconds", 72)
+RequestDelayBox.Position = UDim2.fromOffset(726, 43)
+RequestDelayBox.Text = tostring(CONFIG.RequestDelay)
+RequestDelayBox.TextXAlignment = Enum.TextXAlignment.Center
+
+local function applyRequestDelay()
+    local entered = tonumber((RequestDelayBox.Text or ""):gsub(",", "."))
+    if not entered then
+        RequestDelayBox.Text = tostring(CONFIG.RequestDelay)
+        log("Invalid item delay; kept " .. tostring(CONFIG.RequestDelay) .. " seconds", "WARNING")
+        return false
+    end
+
+    -- Keep a small positive floor to avoid flooding the market endpoint.
+    CONFIG.RequestDelay = math.clamp(entered, 0.1, 60)
+    RequestDelayBox.Text = tostring(CONFIG.RequestDelay)
+    local saved = savePersistentState()
+    StatusText.Text = "STATUS: ITEM DELAY SAVED - " .. tostring(CONFIG.RequestDelay) .. "s"
+    StatusText.TextColor3 = COLORS.Green
+    log("Watchlist item delay saved: " .. tostring(CONFIG.RequestDelay) .. " seconds" .. (saved and " (file save attempted)" or " (runtime only)"), "CONFIG")
+    return true
+end
+
+-- Explicit Save button: typing alone does not change the active delay.
+local SaveDelayButton = makeButton(
+    ControlPanel,
+    "SAVE",
+    applyRequestDelay,
+    COLORS.Green,
+    58
+)
+SaveDelayButton.Position = UDim2.fromOffset(804, 43)
+
+RequestDelayBox.FocusLost:Connect(function()
+    -- Keep the typed value visible; user applies it with SAVE.
+end)
 
 --==================================================
 -- ANTI-AFK
@@ -1766,90 +1873,33 @@ create("UIPadding", {
     PaddingRight = UDim.new(0, 6)
 }, PurchaseList)
 
---==================================================
--- RESPONSIVE MOBILE PORTRAIT LAYOUT
---==================================================
-
-if IsMobilePortrait then
-    local mobileWidth = math.max(280, Viewport.X - 40)
-    local y = 0
-
-    -- Keep the whole interface in one vertical, touch-friendly column.
-    Content.Position = UDim2.fromOffset(8, 54)
-    Content.Size = UDim2.new(1, -16, 1, -62)
-    Content.ScrollBarThickness = 5
-    Content.CanvasSize = UDim2.new(0, 0, 0, 1260)
-
-    StatusBar.Position = UDim2.fromOffset(0, 0)
-    StatusBar.Size = UDim2.new(1, 0, 0, 34)
-
-    ControlPanel.Position = UDim2.fromOffset(0, 42)
-    ControlPanel.Size = UDim2.new(1, 0, 0, 126)
-
-    local fieldGap = 6
-    local fieldWidth = (mobileWidth - 3 * fieldGap - 16) / 3
-    ItemIdBox.Position = UDim2.fromOffset(8, 8)
-    ItemIdBox.Size = UDim2.new(0.34, -8, 0, 30)
-    ItemNameBox.Position = UDim2.new(0.34, 2, 0, 8)
-    ItemNameBox.Size = UDim2.new(0.34, -8, 0, 30)
-    MaxPriceBox.Position = UDim2.new(0.68, 2, 0, 8)
-    MaxPriceBox.Size = UDim2.new(0.17, -4, 0, 30)
-    AddButton.Position = UDim2.new(0.85, 2, 0, 8)
-    AddButton.Size = UDim2.new(0.15, -10, 0, 30)
-
-    local actionGap = 5
-    local actionWidth = (mobileWidth - 16 - actionGap * 2) / 3
-    ForceScanButton.Position = UDim2.fromOffset(8, 46)
-    ForceScanButton.Size = UDim2.new(0.33, -8, 0, 30)
-    StartButton.Position = UDim2.new(0.33, 1, 0, 46)
-    StartButton.Size = UDim2.new(0.34, -8, 0, 30)
-    StopButton.Position = UDim2.new(0.67, 2, 0, 46)
-    StopButton.Size = UDim2.new(0.33, -10, 0, 30)
-
-    CopyLogButton.Position = UDim2.fromOffset(8, 84)
-    CopyLogButton.Size = UDim2.new(0.27, -6, 0, 30)
-    ClearLogButton.Position = UDim2.new(0.27, 1, 0, 84)
-    ClearLogButton.Size = UDim2.new(0.27, -6, 0, 30)
-    AntiAFKButton.Position = UDim2.new(0.54, 2, 0, 84)
-    AntiAFKButton.Size = UDim2.new(0.46, -10, 0, 30)
-
-    IDPanel.Position = UDim2.fromOffset(0, 176)
-    IDPanel.Size = UDim2.new(1, 0, 0, 270)
-    ScanGridButton.Position = UDim2.new(1, -183, 0, 8)
-    CopyIDsButton.Position = UDim2.new(1, -91, 0, 8)
-    IDSearchBox.Position = UDim2.fromOffset(9, 64)
-    IDSearchBox.Size = UDim2.new(1, -18, 0, 28)
-    IDFrame.Position = UDim2.fromOffset(8, 98)
-    IDFrame.Size = UDim2.new(1, -16, 1, -106)
-
-    WatchPanel.Position = UDim2.fromOffset(0, 454)
-    WatchPanel.Size = UDim2.new(1, 0, 0, 300)
-    WatchlistFrame.Position = UDim2.fromOffset(8, 30)
-    WatchlistFrame.Size = UDim2.new(1, -16, 1, -38)
-
-    ActivityTab.Position = UDim2.fromOffset(0, 764)
-    PurchaseTab.Position = UDim2.fromOffset(122, 764)
-
-    LogFrame.Position = UDim2.fromOffset(0, 802)
-    LogFrame.Size = UDim2.new(1, 0, 0, 360)
-    PurchasePanel.Position = UDim2.fromOffset(0, 802)
-    PurchasePanel.Size = UDim2.new(1, 0, 0, 360)
-    PurchaseList.Size = UDim2.new(1, -16, 1, -142)
-
-    Title.TextSize = 13
-    Subtitle.TextSize = 7
-    MinimizeButton.Text = "MIN"
-    MinimizeButton.Size = UDim2.fromOffset(48, 30)
-    MinimizeButton.Position = UDim2.new(1, -56, 0, 9)
-
-    -- Keep all controls inside the available portrait width.
-    local function updateMobileCanvas()
-        Content.CanvasSize = UDim2.new(0, 0, 0, 1170)
-    end
-    updateMobileCanvas()
+-- Only keep purchase notifications whose item matches the current Watchlist.
+-- Matching is exact after removing spaces/punctuation and ignoring case.
+local function normalizePurchaseItem(value)
+    return tostring(value or ""):lower():gsub("[^%w]", "")
 end
 
-PurchaseRecords = SavedPurchaseRecords or {}
+local function isWatchlistPurchase(itemName)
+    local target = normalizePurchaseItem(itemName)
+    if target == "" then return false end
+
+    for _, watchItem in ipairs(Watchlist) do
+        if target == normalizePurchaseItem(watchItem.name)
+            or target == normalizePurchaseItem(watchItem.id) then
+            return true
+        end
+    end
+
+    return false
+end
+
+PurchaseRecords = {}
+for _, savedRecord in ipairs(SavedPurchaseRecords or {}) do
+    if type(savedRecord) == "table" and isWatchlistPurchase(savedRecord.item) then
+        table.insert(PurchaseRecords, savedRecord)
+    end
+end
+
 local PurchaseTotalSpent = 0
 local PurchaseTotalUnits = 0
 for _, savedRecord in ipairs(PurchaseRecords) do
@@ -1948,7 +1998,7 @@ local function addReportButton(text, x, width, color, callback)
     }, ReportActions)
     corner(button, 6)
     stroke(button)
-    button.MouseButton1Click:Connect(callback)
+    button.Activated:Connect(callback)
     return button
 end
 
@@ -1986,6 +2036,16 @@ addReportButton("COPY LAST", 240, 100, COLORS.Panel2, function()
     end
 end)
 
+if IsMobilePortrait then
+    for _, button in ipairs(ReportActions:GetChildren()) do
+        if button:IsA("TextButton") then
+            if button.Text == "COPY REPORT" then button.Position = UDim2.fromOffset(0, 0); button.Size = UDim2.fromOffset(104, 29)
+            elseif button.Text == "CLEAR REPORT" then button.Position = UDim2.fromOffset(110, 0); button.Size = UDim2.fromOffset(104, 29)
+            elseif button.Text == "COPY LAST" then button.Position = UDim2.fromOffset(220, 0); button.Size = UDim2.fromOffset(92, 29) end
+        end
+    end
+end
+
 local function inspectPurchaseText(object)
     if not PurchaseDetectorRunning then return end
     if not object:IsA("TextLabel") and not object:IsA("TextButton") then return end
@@ -1999,6 +2059,11 @@ local function inspectPurchaseText(object)
 
         local record = parsePurchaseToast(textValue)
         if not record then return end
+
+        -- Ignore generic market/mail purchases that are not in this Watchlist.
+        if not isWatchlistPurchase(record.item) then
+            return
+        end
 
         table.insert(PurchaseRecords, 1, record)
         savePersistentState()
@@ -2025,6 +2090,147 @@ watchPurchaseContainer(PlayerGui)
 pcall(function() watchPurchaseContainer(game:GetService("CoreGui")) end)
 
 --==================================================
+-- MOBILE PORTRAIT RESPONSIVE LAYOUT
+--==================================================
+
+if IsMobilePortrait then
+    local W = MobileMainWidth - 16
+    local controlButtonY = 78
+
+    -- Status and compact two-row controls
+    StatusBar.Position = UDim2.fromOffset(0, 0)
+    StatusBar.Size = UDim2.new(1, 0, 0, 32)
+    ControlPanel.Position = UDim2.fromOffset(0, 38)
+    ControlPanel.Size = UDim2.new(1, 0, 0, 112)
+
+    local gap = 5
+    local inputWidth = math.floor((W - 4 * gap - 8) / 4)
+    ItemIdBox.Position = UDim2.fromOffset(5, 7)
+    ItemIdBox.Size = UDim2.fromOffset(inputWidth, 30)
+    ItemNameBox.Position = UDim2.fromOffset(10 + inputWidth, 7)
+    ItemNameBox.Size = UDim2.fromOffset(inputWidth, 30)
+    MaxPriceBox.Position = UDim2.fromOffset(15 + inputWidth * 2, 7)
+    MaxPriceBox.Size = UDim2.fromOffset(inputWidth, 30)
+    AddButton.Position = UDim2.fromOffset(20 + inputWidth * 3, 7)
+    AddButton.Size = UDim2.fromOffset(math.max(58, W - (25 + inputWidth * 3)), 30)
+    AddButton.TextSize = 9
+
+    local topButtons = {
+        {ForceScanButton, 76}, {StartButton, 88}, {StopButton, 76}
+    }
+    local x = 5
+    for _, entry in ipairs(topButtons) do
+        local button, width = entry[1], entry[2]
+        button.Position = UDim2.fromOffset(x, 43)
+        button.Size = UDim2.fromOffset(width, 29)
+        button.TextSize = 8
+        x = x + width + 4
+    end
+
+    local bottomButtons = {
+        {CopyLogButton, 58}, {ClearLogButton, 58}
+    }
+    x = 5
+    for _, entry in ipairs(bottomButtons) do
+        local button, width = entry[1], entry[2]
+        button.Position = UDim2.fromOffset(x, 78)
+        button.Size = UDim2.fromOffset(width, 28)
+        button.TextSize = 8
+        x = x + width + 3
+    end
+    AntiAFKButton.Position = UDim2.fromOffset(x, 78)
+    AntiAFKButton.Size = UDim2.fromOffset(72, 28)
+    AntiAFKButton.TextSize = 7
+    x = x + 75
+    DelayLabel.Position = UDim2.fromOffset(x, 78)
+    DelayLabel.Size = UDim2.fromOffset(31, 28)
+    DelayLabel.TextSize = 7
+    x = x + 32
+    RequestDelayBox.Position = UDim2.fromOffset(x, 78)
+    RequestDelayBox.Size = UDim2.fromOffset(34, 28)
+    x = x + 37
+    SaveDelayButton.Position = UDim2.fromOffset(x, 78)
+    SaveDelayButton.Size = UDim2.fromOffset(45, 28)
+    SaveDelayButton.TextSize = 7
+
+    -- Stack Market Grid and Watchlist vertically; each list remains independently scrollable.
+    IDPanel.Position = UDim2.fromOffset(0, 158)
+    IDPanel.Size = UDim2.new(1, 0, 0, 290)
+    ScanGridButton.Position = UDim2.new(1, -176, 0, 5)
+    ScanGridButton.Size = UDim2.fromOffset(82, 27)
+    CopyIDsButton.Position = UDim2.new(1, -88, 0, 5)
+    CopyIDsButton.Size = UDim2.fromOffset(80, 27)
+    IDSearchBox.Position = UDim2.fromOffset(8, 66)
+    IDSearchBox.Size = UDim2.new(1, -16, 0, 28)
+    IDFrame.Position = UDim2.fromOffset(8, 100)
+    IDFrame.Size = UDim2.new(1, -16, 1, -108)
+
+    WatchPanel.Position = UDim2.fromOffset(0, 456)
+    WatchPanel.Size = UDim2.new(1, 0, 0, 390)
+    WatchlistFrame.Position = UDim2.fromOffset(8, 30)
+    WatchlistFrame.Size = UDim2.new(1, -16, 1, -38)
+
+    ActivityTab.Position = UDim2.fromOffset(0, 854)
+    PurchaseTab.Position = UDim2.fromOffset(122, 854)
+    LogFrame.Position = UDim2.fromOffset(0, 891)
+    LogFrame.Size = UDim2.new(1, 0, 0, 360)
+    PurchasePanel.Position = UDim2.fromOffset(0, 891)
+    PurchasePanel.Size = UDim2.new(1, 0, 0, 430)
+    PurchaseSummary.Size = UDim2.new(1, -16, 0, 72)
+    ReportActions.Position = UDim2.fromOffset(8, 110)
+    PurchaseList.Position = UDim2.fromOffset(8, 148)
+    PurchaseList.Size = UDim2.new(1, -16, 1, -156)
+
+    Content.CanvasSize = UDim2.new(0, 0, 0, 1330)
+    Content.ScrollingEnabled = true
+
+    -- Make each Watchlist card touch-friendly and wrap its controls onto a bottom row.
+    local originalRefreshItems = refreshItems
+    refreshItems = function()
+        originalRefreshItems()
+        for _, card in ipairs(WatchlistFrame:GetChildren()) do
+            if card:IsA("Frame") then
+                card.Size = UDim2.new(1, -6, 0, 112)
+                for _, child in ipairs(card:GetChildren()) do
+                    if child:IsA("TextLabel") then
+                        if child.Position.Y.Offset <= 5 then
+                            child.Size = UDim2.new(1, -12, 0, 18)
+                        elseif child.Position.Y.Offset <= 25 then
+                            child.Size = UDim2.new(1, -12, 0, 17)
+                        elseif child.Position.Y.Offset <= 45 then
+                            child.Size = UDim2.new(1, -12, 0, 17)
+                        end
+                    elseif child:IsA("TextButton") then
+                        local text = child.Text
+                        local bx, bw = 6, 38
+                        if text == "★" or text == "☆" then bw = 28
+                        elseif text == "AUTO BUY ON" or text == "AUTO BUY OFF" then bw = 82
+                        elseif text:match("^MAX %$") then bw = 92
+                        elseif text == "ON" or text == "OFF" then bw = 34
+                        elseif text == "EDIT" or text == "DEL" then bw = 36 end
+                        local offsets = {
+                            ["★"] = 0, ["☆"] = 0,
+                            ["ON"] = 32, ["OFF"] = 32,
+                            ["EDIT"] = 70, ["DEL"] = 110,
+                            ["AUTO BUY ON"] = 150, ["AUTO BUY OFF"] = 150
+                        }
+                        if text:match("^MAX %$") then
+                            child.Position = UDim2.new(1, -98, 0, 76)
+                            child.Size = UDim2.fromOffset(92, 27)
+                        else
+                            child.Position = UDim2.fromOffset(6 + (offsets[text] or 0), 76)
+                            child.Size = UDim2.fromOffset(bw, 27)
+                        end
+                        child.TextSize = 8
+                    end
+                end
+            end
+        end
+    end
+    refreshItems()
+end
+
+--==================================================
 -- INITIALIZE
 --==================================================
 
@@ -2033,7 +2239,7 @@ refreshIDList()
 refreshPurchaseReport()
 savePersistentState()
 
-log("HUSH MARKET WATCHER v2.5.2 MOBILE initialized", "SYSTEM")
+log("HUSH MARKET WATCHER v2.6.0 MOBILE initialized", "SYSTEM")
 if type(writefile) == "function" and SavedState then
     log("Saved settings restored from " .. SAVE_FILE, "SAVE")
 elseif type(writefile) == "function" then
