@@ -1129,7 +1129,7 @@ Title.Size = UDim2.new(1, -150, 0, 22)
 
 local Subtitle = makeLabel(
     TitleBar,
-    "MARKET ID SCANNER  /  PRICE MONITOR  /  AUTO BUY  /  ANTI-AFK  /  PURCHASE REPORT  /  V2.5.0",
+    "MARKET ID SCANNER  /  PRICE MONITOR  /  AUTO BUY  /  ANTI-AFK  /  PURCHASE REPORT  /  V2.5.2 MOBILE",
     9,
     COLORS.Muted,
     false
@@ -1137,12 +1137,29 @@ local Subtitle = makeLabel(
 
 Subtitle.Position = UDim2.fromOffset(17, 25)
 
-Content = create("Frame", {
+Content = create("ScrollingFrame", {
     Name = "Content",
     BackgroundTransparency = 1,
     Position = UDim2.fromOffset(12, 58),
-    Size = UDim2.new(1, -24, 1, -70)
+    Size = UDim2.new(1, -24, 1, -70),
+    BorderSizePixel = 0,
+    ScrollBarThickness = 5,
+    ScrollBarImageColor3 = COLORS.Accent,
+    ScrollingDirection = Enum.ScrollingDirection.Y,
+    CanvasSize = UDim2.new(0, 0, 0, 0)
 }, Main)
+
+local Viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
+local IsMobilePortrait = Viewport.X < 850 and Viewport.Y >= Viewport.X
+local ExpandedMainSize = IsMobilePortrait
+    and UDim2.fromOffset(math.max(300, Viewport.X - 16), math.max(420, Viewport.Y - 48))
+    or UDim2.fromOffset(1120, 800)
+
+Main.Size = ExpandedMainSize
+if IsMobilePortrait then
+    Main.Position = UDim2.new(0.5, 0, 0.5, 0)
+    Main.AnchorPoint = Vector2.new(0.5, 0.5)
+end
 
 local MinimizeButton = makeButton(
     TitleBar,
@@ -1152,11 +1169,11 @@ local MinimizeButton = makeButton(
 
         if minimized then
             Main:SetAttribute("Minimized", false)
-            Main.Size = UDim2.fromOffset(1120, 800)
+            Main.Size = ExpandedMainSize
             Content.Visible = true
         else
             Main:SetAttribute("Minimized", true)
-            Main.Size = UDim2.fromOffset(1120, 48)
+            Main.Size = UDim2.new(1, 0, 0, 48)
             Content.Visible = false
         end
     end,
@@ -1749,6 +1766,89 @@ create("UIPadding", {
     PaddingRight = UDim.new(0, 6)
 }, PurchaseList)
 
+--==================================================
+-- RESPONSIVE MOBILE PORTRAIT LAYOUT
+--==================================================
+
+if IsMobilePortrait then
+    local mobileWidth = math.max(280, Viewport.X - 40)
+    local y = 0
+
+    -- Keep the whole interface in one vertical, touch-friendly column.
+    Content.Position = UDim2.fromOffset(8, 54)
+    Content.Size = UDim2.new(1, -16, 1, -62)
+    Content.ScrollBarThickness = 5
+    Content.CanvasSize = UDim2.new(0, 0, 0, 1260)
+
+    StatusBar.Position = UDim2.fromOffset(0, 0)
+    StatusBar.Size = UDim2.new(1, 0, 0, 34)
+
+    ControlPanel.Position = UDim2.fromOffset(0, 42)
+    ControlPanel.Size = UDim2.new(1, 0, 0, 126)
+
+    local fieldGap = 6
+    local fieldWidth = (mobileWidth - 3 * fieldGap - 16) / 3
+    ItemIdBox.Position = UDim2.fromOffset(8, 8)
+    ItemIdBox.Size = UDim2.new(0.34, -8, 0, 30)
+    ItemNameBox.Position = UDim2.new(0.34, 2, 0, 8)
+    ItemNameBox.Size = UDim2.new(0.34, -8, 0, 30)
+    MaxPriceBox.Position = UDim2.new(0.68, 2, 0, 8)
+    MaxPriceBox.Size = UDim2.new(0.17, -4, 0, 30)
+    AddButton.Position = UDim2.new(0.85, 2, 0, 8)
+    AddButton.Size = UDim2.new(0.15, -10, 0, 30)
+
+    local actionGap = 5
+    local actionWidth = (mobileWidth - 16 - actionGap * 2) / 3
+    ForceScanButton.Position = UDim2.fromOffset(8, 46)
+    ForceScanButton.Size = UDim2.new(0.33, -8, 0, 30)
+    StartButton.Position = UDim2.new(0.33, 1, 0, 46)
+    StartButton.Size = UDim2.new(0.34, -8, 0, 30)
+    StopButton.Position = UDim2.new(0.67, 2, 0, 46)
+    StopButton.Size = UDim2.new(0.33, -10, 0, 30)
+
+    CopyLogButton.Position = UDim2.fromOffset(8, 84)
+    CopyLogButton.Size = UDim2.new(0.27, -6, 0, 30)
+    ClearLogButton.Position = UDim2.new(0.27, 1, 0, 84)
+    ClearLogButton.Size = UDim2.new(0.27, -6, 0, 30)
+    AntiAFKButton.Position = UDim2.new(0.54, 2, 0, 84)
+    AntiAFKButton.Size = UDim2.new(0.46, -10, 0, 30)
+
+    IDPanel.Position = UDim2.fromOffset(0, 176)
+    IDPanel.Size = UDim2.new(1, 0, 0, 270)
+    ScanGridButton.Position = UDim2.new(1, -183, 0, 8)
+    CopyIDsButton.Position = UDim2.new(1, -91, 0, 8)
+    IDSearchBox.Position = UDim2.fromOffset(9, 64)
+    IDSearchBox.Size = UDim2.new(1, -18, 0, 28)
+    IDFrame.Position = UDim2.fromOffset(8, 98)
+    IDFrame.Size = UDim2.new(1, -16, 1, -106)
+
+    WatchPanel.Position = UDim2.fromOffset(0, 454)
+    WatchPanel.Size = UDim2.new(1, 0, 0, 300)
+    WatchlistFrame.Position = UDim2.fromOffset(8, 30)
+    WatchlistFrame.Size = UDim2.new(1, -16, 1, -38)
+
+    ActivityTab.Position = UDim2.fromOffset(0, 764)
+    PurchaseTab.Position = UDim2.fromOffset(122, 764)
+
+    LogFrame.Position = UDim2.fromOffset(0, 802)
+    LogFrame.Size = UDim2.new(1, 0, 0, 360)
+    PurchasePanel.Position = UDim2.fromOffset(0, 802)
+    PurchasePanel.Size = UDim2.new(1, 0, 0, 360)
+    PurchaseList.Size = UDim2.new(1, -16, 1, -142)
+
+    Title.TextSize = 13
+    Subtitle.TextSize = 7
+    MinimizeButton.Text = "MIN"
+    MinimizeButton.Size = UDim2.fromOffset(48, 30)
+    MinimizeButton.Position = UDim2.new(1, -56, 0, 9)
+
+    -- Keep all controls inside the available portrait width.
+    local function updateMobileCanvas()
+        Content.CanvasSize = UDim2.new(0, 0, 0, 1170)
+    end
+    updateMobileCanvas()
+end
+
 PurchaseRecords = SavedPurchaseRecords or {}
 local PurchaseTotalSpent = 0
 local PurchaseTotalUnits = 0
@@ -1933,7 +2033,7 @@ refreshIDList()
 refreshPurchaseReport()
 savePersistentState()
 
-log("HUSH MARKET WATCHER v2.5.1 initialized", "SYSTEM")
+log("HUSH MARKET WATCHER v2.5.2 MOBILE initialized", "SYSTEM")
 if type(writefile) == "function" and SavedState then
     log("Saved settings restored from " .. SAVE_FILE, "SAVE")
 elseif type(writefile) == "function" then
