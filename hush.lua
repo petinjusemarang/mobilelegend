@@ -1191,7 +1191,7 @@ end
 
 local camera = workspace.CurrentCamera
 local viewport = camera and camera.ViewportSize or Vector2.new(1280, 720)
-local IsMobilePortrait = viewport.X < viewport.Y or viewport.X < 800
+local IsMobilePortrait = true -- Force compact floating-window layout on every screen size
 
 ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "HushAutoSniper"
@@ -1201,8 +1201,9 @@ ScreenGui.DisplayOrder = 999999
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.Parent = PlayerGui
 
-local MobileMainWidth = math.max(300, viewport.X - 12)
-local MobileMainHeight = math.max(420, viewport.Y - 18)
+-- Keep the mobile window compact instead of occupying the entire phone screen.
+local MobileMainWidth = math.max(290, math.min(360, viewport.X - 24))
+local MobileMainHeight = math.max(380, math.min(460, math.floor(viewport.Y * 0.58)))
 Main = create("Frame", {
     Name = "Main",
     BackgroundColor3 = COLORS.Background,
@@ -1225,6 +1226,22 @@ local TitleBar = create("Frame", {
 }, Main)
 
 corner(TitleBar, 12)
+if IsMobilePortrait then
+    TitleBar.Size = UDim2.new(1, 0, 0, 42)
+end
+
+local DragTarget = TitleBar
+if IsMobilePortrait then
+    DragTarget = create("TextButton", {
+        Name = "MobileDragHandle",
+        Text = "",
+        AutoButtonColor = false,
+        BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(0, 0),
+        Size = UDim2.new(1, -104, 1, 0),
+        ZIndex = 5
+    }, TitleBar)
+end
 
 local Title = makeLabel(
     TitleBar,
@@ -1239,19 +1256,26 @@ Title.Size = UDim2.new(1, -150, 0, 22)
 
 local Subtitle = makeLabel(
     TitleBar,
-    "MARKET ID SCANNER  /  PRICE MONITOR  /  AUTO BUY  /  ANTI-AFK  /  PURCHASE REPORT  /  V2.6.1 MOBILE",
+    "MARKET ID SCANNER  /  PRICE MONITOR  /  AUTO BUY  /  ANTI-AFK  /  PURCHASE REPORT  /  V2.6.3 MOBILE",
     9,
     COLORS.Muted,
     false
 )
 
 Subtitle.Position = UDim2.fromOffset(17, 25)
+if IsMobilePortrait then
+    Title.Text = "HUSH MARKET WATCHER  ·  MOVE"
+    Title.TextSize = 12
+    Title.Position = UDim2.fromOffset(12, 2)
+    Title.Size = UDim2.new(1, -112, 0, 20)
+    Subtitle.Visible = false
+end
 
 Content = create(IsMobilePortrait and "ScrollingFrame" or "Frame", {
     Name = "Content",
     BackgroundTransparency = 1,
-    Position = UDim2.fromOffset(IsMobilePortrait and 8 or 12, 58),
-    Size = UDim2.new(1, IsMobilePortrait and -16 or -24, 1, -70),
+    Position = UDim2.fromOffset(IsMobilePortrait and 8 or 12, IsMobilePortrait and 50 or 58),
+    Size = UDim2.new(1, IsMobilePortrait and -16 or -24, 1, IsMobilePortrait and -58 or -70),
     BorderSizePixel = 0
 }, Main)
 if IsMobilePortrait then
@@ -1283,33 +1307,41 @@ local MinimizeButton = makeButton(
 
 MinimizeButton.Position = UDim2.new(1, -98, 0, 9)
 
+-- Reliable mouse + touch dragging. The title strip is the dedicated drag handle.
 local dragging = false
-local dragStart
-local startPosition
+local dragStart = nil
+local startPosition = nil
+local activeDragInput = nil
 
-TitleBar.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
-
+DragTarget.InputBegan:Connect(function(input)
+    local inputType = input.UserInputType
+    if inputType == Enum.UserInputType.MouseButton1 or inputType == Enum.UserInputType.Touch then
         dragging = true
         dragStart = input.Position
         startPosition = Main.Position
+        activeDragInput = inputType == Enum.UserInputType.Touch and input or nil
 
         input.Changed:Connect(function()
             if input.UserInputState == Enum.UserInputState.End then
                 dragging = false
+                activeDragInput = nil
             end
         end)
     end
 end)
 
-UserInputService.InputChanged:Connect(function(input)
-    if dragging and (
-        input.UserInputType == Enum.UserInputType.MouseMovement
-        or input.UserInputType == Enum.UserInputType.Touch
-    ) then
-        local delta = input.Position - dragStart
+DragTarget.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch then
+        activeDragInput = input
+    end
+end)
 
+UserInputService.InputChanged:Connect(function(input)
+    local isMouseMove = input.UserInputType == Enum.UserInputType.MouseMovement
+    local isActiveTouch = activeDragInput ~= nil and input == activeDragInput
+    if dragging and (isMouseMove or isActiveTouch) then
+        local delta = input.Position - dragStart
         Main.Position = UDim2.new(
             startPosition.X.Scale,
             startPosition.X.Offset + delta.X,
@@ -2130,159 +2162,57 @@ pcall(function() watchPurchaseContainer(game:GetService("CoreGui")) end)
 
 if IsMobilePortrait then
     local W = MobileMainWidth - 16
-    local controlButtonY = 78
 
-    -- Status and compact two-row controls
+    -- Compact floating window: short status + two compact control rows.
     StatusBar.Position = UDim2.fromOffset(0, 0)
-    StatusBar.Size = UDim2.new(1, 0, 0, 32)
-    ControlPanel.Position = UDim2.fromOffset(0, 38)
-    ControlPanel.Size = UDim2.new(1, 0, 0, 146)
+    StatusBar.Size = UDim2.new(1, 0, 0, 24)
+    StatusText.TextSize = 8
+    ScanCountText.TextSize = 8
+    ControlPanel.Position = UDim2.fromOffset(0, 29)
+    ControlPanel.Size = UDim2.new(1, 0, 0, 82)
 
-    local gap = 5
-    local inputWidth = math.floor((W - 4 * gap - 8) / 4)
-    ItemIdBox.Position = UDim2.fromOffset(5, 7)
-    ItemIdBox.Size = UDim2.fromOffset(inputWidth, 30)
-    ItemNameBox.Position = UDim2.fromOffset(10 + inputWidth, 7)
-    ItemNameBox.Size = UDim2.fromOffset(inputWidth, 30)
-    MaxPriceBox.Position = UDim2.fromOffset(15 + inputWidth * 2, 7)
-    MaxPriceBox.Size = UDim2.fromOffset(inputWidth, 30)
-    AddButton.Position = UDim2.fromOffset(20 + inputWidth * 3, 7)
-    AddButton.Size = UDim2.fromOffset(math.max(58, W - (25 + inputWidth * 3)), 30)
-    AddButton.TextSize = 9
+    -- Row 1: item ID, display name, max price, add.
+    local gap = 4
+    local idW, nameW, priceW = 76, 72, 68
+    ItemIdBox.Position = UDim2.fromOffset(5, 6)
+    ItemIdBox.Size = UDim2.fromOffset(idW, 27)
+    ItemNameBox.Position = UDim2.fromOffset(5 + idW + gap, 6)
+    ItemNameBox.Size = UDim2.fromOffset(nameW, 27)
+    MaxPriceBox.Position = UDim2.fromOffset(5 + idW + nameW + gap * 2, 6)
+    MaxPriceBox.Size = UDim2.fromOffset(priceW, 27)
+    AddButton.Position = UDim2.new(1, -66, 0, 6)
+    AddButton.Size = UDim2.fromOffset(61, 27)
+    AddButton.TextSize = 8
 
-    local topButtons = {
-        {ForceScanButton, 76}, {StartButton, 88}, {StopButton, 76}
-    }
-    local x = 5
-    for _, entry in ipairs(topButtons) do
-        local button, width = entry[1], entry[2]
-        button.Position = UDim2.fromOffset(x, 43)
-        button.Size = UDim2.fromOffset(width, 29)
-        button.TextSize = 8
-        x = x + width + 4
-    end
+    -- Row 2: scan controls only; advanced/log controls stay out of the main view.
+    ForceScanButton.Position = UDim2.fromOffset(5, 43)
+    ForceScanButton.Size = UDim2.fromOffset(88, 28)
+    ForceScanButton.TextSize = 8
+    StartButton.Position = UDim2.fromOffset(98, 43)
+    StartButton.Size = UDim2.fromOffset(92, 28)
+    StartButton.TextSize = 8
+    StopButton.Position = UDim2.fromOffset(195, 43)
+    StopButton.Size = UDim2.fromOffset(78, 28)
+    StopButton.TextSize = 8
+    CopyLogButton.Visible = false
+    ClearLogButton.Visible = false
+    DelayLabel.Visible = false
+    RequestDelayBox.Visible = false
+    SaveDelayButton.Visible = false
+    AntiAFKButton.Visible = false
 
-    -- Row 3: log and anti-AFK controls.
-    local bottomButtons = {
-        {CopyLogButton, 64}, {ClearLogButton, 64}
-    }
-    x = 5
-    for _, entry in ipairs(bottomButtons) do
-        local button, width = entry[1], entry[2]
-        button.Position = UDim2.fromOffset(x, 78)
-        button.Size = UDim2.fromOffset(width, 27)
-        button.TextSize = 8
-        x = x + width + 5
-    end
-    AntiAFKButton.Position = UDim2.fromOffset(x, 78)
-    AntiAFKButton.Size = UDim2.fromOffset(82, 27)
-    AntiAFKButton.TextSize = 7
-
-    -- Row 4: compact delay setting, kept on-screen on narrow phones.
-    DelayLabel.Text = "DELAY SEC"
-    DelayLabel.Position = UDim2.fromOffset(5, 112)
-    DelayLabel.Size = UDim2.fromOffset(58, 27)
-    DelayLabel.TextSize = 8
-    RequestDelayBox.Position = UDim2.fromOffset(67, 112)
-    RequestDelayBox.Size = UDim2.fromOffset(58, 27)
-    SaveDelayButton.Position = UDim2.fromOffset(130, 112)
-    SaveDelayButton.Size = UDim2.fromOffset(52, 27)
-    SaveDelayButton.TextSize = 8
-
-    -- Stack Market Grid and Watchlist vertically; each list remains independently scrollable.
-    IDPanel.Position = UDim2.fromOffset(0, 192)
-    IDPanel.Size = UDim2.new(1, 0, 0, 290)
-    ScanGridButton.Position = UDim2.new(1, -176, 0, 5)
-    ScanGridButton.Size = UDim2.fromOffset(82, 27)
-    CopyIDsButton.Position = UDim2.new(1, -88, 0, 5)
-    CopyIDsButton.Size = UDim2.fromOffset(80, 27)
-    IDSearchBox.Position = UDim2.fromOffset(8, 66)
-    IDSearchBox.Size = UDim2.new(1, -16, 0, 28)
-    IDFrame.Position = UDim2.fromOffset(8, 100)
-    IDFrame.Size = UDim2.new(1, -16, 1, -108)
-
-    WatchPanel.Position = UDim2.fromOffset(0, 490)
-    WatchPanel.Size = UDim2.new(1, 0, 0, 390)
-    WatchlistFrame.Position = UDim2.fromOffset(8, 30)
-    WatchlistFrame.Size = UDim2.new(1, -16, 1, -38)
-
-    ActivityTab.Position = UDim2.fromOffset(0, 888)
-    PurchaseTab.Position = UDim2.fromOffset(122, 888)
-    LogFrame.Position = UDim2.fromOffset(0, 925)
-    LogFrame.Size = UDim2.new(1, 0, 0, 360)
-    PurchasePanel.Position = UDim2.fromOffset(0, 925)
-    PurchasePanel.Size = UDim2.new(1, 0, 0, 430)
-    PurchaseSummary.Size = UDim2.new(1, -16, 0, 72)
-    ReportActions.Position = UDim2.fromOffset(8, 110)
-    PurchaseList.Position = UDim2.fromOffset(8, 148)
-    PurchaseList.Size = UDim2.new(1, -16, 1, -156)
-
-    Content.CanvasSize = UDim2.new(0, 0, 0, 1365)
-    Content.ScrollingEnabled = true
-
-    -- Make each Watchlist card touch-friendly and wrap its controls onto a bottom row.
-    local originalRefreshItems = refreshItems
-    refreshItems = function()
-        originalRefreshItems()
-        for _, card in ipairs(WatchlistFrame:GetChildren()) do
-            if card:IsA("Frame") then
-                card.Size = UDim2.new(1, -6, 0, 112)
-                for _, child in ipairs(card:GetChildren()) do
-                    if child:IsA("TextLabel") then
-                        if child.Position.Y.Offset <= 5 then
-                            child.Size = UDim2.new(1, -12, 0, 18)
-                        elseif child.Position.Y.Offset <= 25 then
-                            child.Size = UDim2.new(1, -12, 0, 17)
-                        elseif child.Position.Y.Offset <= 45 then
-                            child.Size = UDim2.new(1, -12, 0, 17)
-                        end
-                    elseif child:IsA("TextButton") then
-                        local text = child.Text
-                        local bx, bw = 6, 38
-                        if text == "★" or text == "☆" then bw = 28
-                        elseif text == "AUTO BUY ON" or text == "AUTO BUY OFF" then bw = 82
-                        elseif text:match("^MAX %$") then bw = 92
-                        elseif text == "ON" or text == "OFF" then bw = 34
-                        elseif text == "EDIT" or text == "DEL" then bw = 36 end
-                        local offsets = {
-                            ["★"] = 0, ["☆"] = 0,
-                            ["ON"] = 32, ["OFF"] = 32,
-                            ["EDIT"] = 70, ["DEL"] = 110,
-                            ["AUTO BUY ON"] = 150, ["AUTO BUY OFF"] = 150
-                        }
-                        if text:match("^MAX %$") then
-                            child.Position = UDim2.new(1, -98, 0, 76)
-                            child.Size = UDim2.fromOffset(92, 27)
-                        else
-                            child.Position = UDim2.fromOffset(6 + (offsets[text] or 0), 76)
-                            child.Size = UDim2.fromOffset(bw, 27)
-                        end
-                        child.TextSize = 8
-                    end
-                end
-            end
-        end
-    end
-    refreshItems()
-
-    -- Compact portrait tab navigation: GRID / WATCH / LOG / BUYS.
-    -- Keep status + controls fixed; only the selected content panel is visible.
-    Content.ScrollingEnabled = false
-    Content.CanvasSize = UDim2.new(0, 0, 0, 0)
-    Content.AutomaticCanvasSize = Enum.AutomaticSize.None
-    Content.ClipsDescendants = true
-
-    local tabY = 192
-    local pageY = 230
-    local pageHeight = math.max(170, MobileMainHeight - 70 - pageY - 8)
-    local tabGap = 4
-    local tabWidth = math.floor((W - tabGap * 3) / 4)
+    -- Two pages only: MARKET GRID and WATCHLIST.
+    local tabY = 118
+    local pageY = 154
+    local pageHeight = math.max(150, MobileMainHeight - 70 - pageY - 8)
+    local tabGap = 6
+    local tabWidth = math.floor((W - tabGap) / 2)
 
     local TabBar = create("Frame", {
         Name = "MobileTabBar",
         BackgroundTransparency = 1,
         Position = UDim2.fromOffset(0, tabY),
-        Size = UDim2.new(1, 0, 0, 32)
+        Size = UDim2.new(1, 0, 0, 30)
     }, Content)
 
     local function placePage(panel)
@@ -2295,49 +2225,102 @@ if IsMobilePortrait then
     placePage(LogFrame)
     placePage(PurchasePanel)
 
-    -- Fit each panel's internal scrolling region to the available portrait page.
-    IDFrame.Position = UDim2.fromOffset(8, 100)
-    IDFrame.Size = UDim2.new(1, -16, 1, -108)
-    WatchlistFrame.Position = UDim2.fromOffset(8, 30)
-    WatchlistFrame.Size = UDim2.new(1, -16, 1, -38)
-    PurchaseList.Position = UDim2.fromOffset(8, 148)
-    PurchaseList.Size = UDim2.new(1, -16, 1, -156)
+    IDPanel.BackgroundColor3 = COLORS.Panel
+    WatchPanel.BackgroundColor3 = COLORS.Panel
+    IDFrame.Position = UDim2.fromOffset(6, 66)
+    IDFrame.Size = UDim2.new(1, -12, 1, -72)
+    IDSearchBox.Position = UDim2.fromOffset(6, 34)
+    IDSearchBox.Size = UDim2.new(1, -12, 0, 26)
+    ScanGridButton.Position = UDim2.new(1, -148, 0, 4)
+    ScanGridButton.Size = UDim2.fromOffset(70, 25)
+    CopyIDsButton.Position = UDim2.new(1, -74, 0, 4)
+    CopyIDsButton.Size = UDim2.fromOffset(68, 25)
+    WatchlistFrame.Position = UDim2.fromOffset(6, 30)
+    WatchlistFrame.Size = UDim2.new(1, -12, 1, -36)
 
     ActivityTab.Visible = false
     PurchaseTab.Visible = false
-    IDPanel.Visible = true
-    WatchPanel.Visible = false
     LogFrame.Visible = false
     PurchasePanel.Visible = false
+    IDPanel.Visible = true
+    WatchPanel.Visible = false
 
     local mobileTabs = {}
     local function showMobileTab(which)
         IDPanel.Visible = which == "GRID"
         WatchPanel.Visible = which == "WATCH"
-        LogFrame.Visible = which == "LOG"
-        PurchasePanel.Visible = which == "BUYS"
         for name, button in pairs(mobileTabs) do
             button.BackgroundColor3 = name == which and COLORS.Accent or COLORS.Panel2
             button.TextColor3 = name == which and COLORS.Text or COLORS.Muted
         end
     end
 
-    local tabNames = {"GRID", "WATCH", "LOG", "BUYS"}
+    local tabNames = {"GRID", "WATCHLIST"}
     for index, name in ipairs(tabNames) do
+        local key = index == 1 and "GRID" or "WATCH"
         local button = makeButton(
             TabBar,
             name,
-            function() showMobileTab(name) end,
+            function() showMobileTab(key) end,
             index == 1 and COLORS.Accent or COLORS.Panel2,
             tabWidth
         )
         button.Position = UDim2.fromOffset((index - 1) * (tabWidth + tabGap), 0)
-        button.Size = UDim2.fromOffset(tabWidth, 32)
+        button.Size = UDim2.fromOffset(tabWidth, 30)
         button.TextSize = 9
-        mobileTabs[name] = button
+        mobileTabs[key] = button
     end
 
+    Content.ScrollingEnabled = false
+    Content.CanvasSize = UDim2.new(0, 0, 0, 0)
+    Content.AutomaticCanvasSize = Enum.AutomaticSize.None
+    Content.ClipsDescendants = true
     showMobileTab("GRID")
+
+    -- Keep watchlist cards compact and arrange every control within the mini window.
+    local originalRefreshItems = refreshItems
+    refreshItems = function()
+        originalRefreshItems()
+        for _, card in ipairs(WatchlistFrame:GetChildren()) do
+            if card:IsA("Frame") then
+                card.Size = UDim2.new(1, -4, 0, 104)
+                for _, child in ipairs(card:GetChildren()) do
+                    if child:IsA("TextLabel") then
+                        if child.Position.Y.Offset <= 5 then
+                            child.Size = UDim2.new(1, -12, 0, 17)
+                        elseif child.Position.Y.Offset <= 25 then
+                            child.Size = UDim2.new(1, -12, 0, 16)
+                        elseif child.Position.Y.Offset <= 45 then
+                            child.Size = UDim2.new(1, -12, 0, 16)
+                        end
+                    elseif child:IsA("TextButton") then
+                        local text = child.Text
+                        local bw = 34
+                        if text == "★" or text == "☆" then bw = 26
+                        elseif text == "AUTO BUY ON" or text == "AUTO BUY OFF" then bw = 76
+                        elseif text:match("^MAX %$") then bw = 86
+                        elseif text == "ON" or text == "OFF" then bw = 30
+                        elseif text == "EDIT" or text == "DEL" then bw = 32 end
+                        local offsets = {
+                            ["★"] = 0, ["☆"] = 0, ["ON"] = 30, ["OFF"] = 30,
+                            ["EDIT"] = 64, ["DEL"] = 100,
+                            ["AUTO BUY ON"] = 134, ["AUTO BUY OFF"] = 134
+                        }
+                        if text:match("^MAX %$") then
+                            child.Position = UDim2.new(1, -92, 0, 72)
+                            child.Size = UDim2.fromOffset(86, 25)
+                        else
+                            child.Position = UDim2.fromOffset(5 + (offsets[text] or 0), 72)
+                            child.Size = UDim2.fromOffset(bw, 25)
+                        end
+                        child.TextSize = 7
+                    end
+                end
+            end
+        end
+    end
+    refreshItems()
+
 end
 
 --==================================================
@@ -2349,7 +2332,7 @@ refreshIDList()
 refreshPurchaseReport()
 savePersistentState()
 
-log("HUSH MARKET WATCHER v2.6.2 MOBILE PORTRAIT TABS initialized", "SYSTEM")
+log("HUSH MARKET WATCHER v2.6.4 MINI TWO-TAB MOBILE initialized", "SYSTEM")
 if type(writefile) == "function" and SavedState then
     log("Saved settings restored from " .. SAVE_FILE, "SAVE")
 elseif type(writefile) == "function" then
