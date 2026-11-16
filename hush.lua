@@ -50,25 +50,65 @@ local CONFIG = {
 
     DefaultWatchlist = {
         {
-            id = "pistol_g17",
-            name = "P17 Pistol",
-            maxPrice = 5000,
+            id = "rifle_dm308_gold",
+            name = "rifle_dm308_gold",
+            maxPrice = 10000000,
             enabled = true,
             autoBuy = false,
             lastBuyAttempt = 0
         },
         {
-            id = "key_a_infirmary",
-            name = "Key A Infirmary",
-            maxPrice = 40000,
+            id = "mg_gm30_gold",
+            name = "mg_gm30_gold",
+            maxPrice = 20000000,
             enabled = true,
             autoBuy = false,
             lastBuyAttempt = 0
         },
         {
-            id = "rifle_ot5_gold",
-            name = "Golden OT-5",
-            maxPrice = 6000000,
+            id = "mg_rv1_gold",
+            name = "mg_rv1_gold",
+            maxPrice = 23000000,
+            enabled = true,
+            autoBuy = false,
+            lastBuyAttempt = 0
+        },
+        {
+            id = "att_scope_8x",
+            name = "att_scope_8x",
+            maxPrice = 5000000,
+            enabled = true,
+            autoBuy = false,
+            lastBuyAttempt = 0
+        },
+        {
+            id = "rifle_tr9_gold",
+            name = "rifle_tr9_gold",
+            maxPrice = 23000000,
+            enabled = true,
+            autoBuy = false,
+            lastBuyAttempt = 0
+        },
+        {
+            id = "melee_katana_gold",
+            name = "melee_katana_gold",
+            maxPrice = 20000000,
+            enabled = true,
+            autoBuy = false,
+            lastBuyAttempt = 0
+        },
+        {
+            id = "rifle_sc7_gold",
+            name = "rifle_sc7_gold",
+            maxPrice = 2000000,
+            enabled = true,
+            autoBuy = false,
+            lastBuyAttempt = 0
+        },
+        {
+            id = "helmet_nvg_quad",
+            name = "helmet_nvg_quad",
+            maxPrice = 23000000,
             enabled = true,
             autoBuy = false,
             lastBuyAttempt = 0
@@ -174,21 +214,34 @@ SavedState = loadSavedState()
 -- Older saved values are intentionally not restored, so a previous 2s/3s
 -- setting cannot silently override this configuration.
 CONFIG.RequestDelay = 1
+-- Always seed the built-in collector items so users do not need to add them manually.
+-- Saved settings override the defaults by ID; unrelated custom entries are retained.
+local savedById = {}
 if SavedState and type(SavedState.watchlist) == "table" then
     for _, item in ipairs(SavedState.watchlist) do
         if type(item) == "table" and type(item.id) == "string" and item.id ~= "" then
-            table.insert(Watchlist, {
-                id = item.id, name = tostring(item.name or item.id),
-                maxPrice = tonumber(item.maxPrice) or 1,
-                enabled = item.enabled == true, autoBuy = item.autoBuy == true,
-                priority = item.priority == true,
-                lastBuyAttempt = 0
-            })
+            savedById[item.id] = item
         end
     end
-else
-    for _, item in ipairs(CONFIG.DefaultWatchlist) do table.insert(Watchlist, cloneTable(item)) end
 end
+
+local builtInIds = {}
+for _, defaultItem in ipairs(CONFIG.DefaultWatchlist) do
+    builtInIds[defaultItem.id] = true
+    local savedItem = savedById[defaultItem.id]
+    local merged = cloneTable(defaultItem)
+    if savedItem then
+        merged.name = tostring(savedItem.name or merged.name)
+        merged.maxPrice = tonumber(savedItem.maxPrice) or merged.maxPrice
+        if savedItem.enabled ~= nil then merged.enabled = savedItem.enabled == true end
+        if savedItem.autoBuy ~= nil then merged.autoBuy = savedItem.autoBuy == true end
+        merged.priority = savedItem.priority == true
+    end
+    table.insert(Watchlist, merged)
+end
+
+-- The built-in watchlist is intentionally limited to the eight items shown in the screenshots.
+
 if SavedState and type(SavedState.discoveredIDs) == "table" then
     for _, id in ipairs(SavedState.discoveredIDs) do
         if type(id) == "string" and id ~= "" and not DiscoveredSet[id] then
