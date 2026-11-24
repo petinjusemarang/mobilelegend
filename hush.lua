@@ -865,10 +865,11 @@ ScreenGui = make("ScreenGui", {
 }, PlayerGui)
 
 local Main = make("Frame", {
-    Name="Main", Size=UDim2.fromOffset(380, 700),
-    Position=UDim2.new(0.5,-190,0.5,-350),
+    Name="Main", Size=UDim2.fromOffset(380, 58),
+    Position=UDim2.new(0.5,-190,0.5,-29),
     BackgroundColor3=COLORS.bg, BorderSizePixel=0,
 }, ScreenGui)
+Main:SetAttribute("Minimized", true)
 addCorner(Main, 14)
 addStroke(Main, COLORS.border, 1)
 
@@ -898,11 +899,12 @@ WindowStatus.Text = "●"
 WindowStatus.TextXAlignment = Enum.TextXAlignment.Right
 
 local Body -- forward declaration for the minimize callback
-local Minimize = button(Top, "—", function()
-    Main:SetAttribute("Minimized", not Main:GetAttribute("Minimized"))
-    local minimized = Main:GetAttribute("Minimized")
+local Minimize = button(Top, "+", function()
+    local minimized = not Main:GetAttribute("Minimized")
+    Main:SetAttribute("Minimized", minimized)
     Main.Size = minimized and UDim2.fromOffset(380,58) or UDim2.fromOffset(380,700)
     Body.Visible = not minimized
+    Minimize.Text = minimized and "+" or "—"
 end, COLORS.panel3, 34, 30)
 Minimize.Position = UDim2.new(1,-42,0,14)
 
@@ -927,7 +929,7 @@ end)
 
 Body = make("Frame", {
     BackgroundTransparency=1, Position=UDim2.fromOffset(8,66),
-    Size=UDim2.new(1,-16,1,-74),
+    Size=UDim2.new(1,-16,1,-74), Visible=false,
 }, Main)
 
 local Tabs = make("Frame", {
