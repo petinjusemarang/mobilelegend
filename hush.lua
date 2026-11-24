@@ -15,10 +15,10 @@ Market features:
 - Persistent settings when executor file APIs exist
 
 NPC features:
-- Reads the actual "Restock in MM:SS" TextLabel under Toolbar
-- Displays MM:SS and total seconds
-- Waits 3 seconds after 00:00, then sends the 11 configured ammo requests
-- Waits for the next restock cycle before triggering again
+- Uses a local 15-minute countdown; does not depend on the game's restock label
+- Displays the next automatic buy countdown clearly
+- At 00:00, waits 3 seconds, then sends the 11 configured ammo requests
+- Starts another 15-minute interval after each automatic batch
 
 Use only where permitted by the game's rules.
 ]]
@@ -735,7 +735,7 @@ end
 local function updateNPCCountdownDisplay(remaining)
     remaining = math.max(0, math.floor(remaining))
     if NPCTimer then
-        NPCTimer.Text = "RESTOCK IN  " .. formatTime(remaining)
+        NPCTimer.Text = "NEXT BUY IN  " .. formatTime(remaining)
     end
     if NPCSeconds then
         NPCSeconds.Text = tostring(remaining) .. " seconds remaining"
@@ -764,10 +764,10 @@ syncNPCFromGameLabel = function()
         NPCSource.Text = "SYNCED FROM GAME  •  " .. NPCLastSyncedText
     end
     if NPCAction then
-        NPCAction.Text = "LIVE TIMER SYNCED"
+        NPCAction.Text = "LOCAL 15-MINUTE TIMER"
     end
 
-    addLog("NPC timer synced: " .. NPCLastSyncedText, "NPC")
+    addLog("NPC timer reference: " .. NPCLastSyncedText, "NPC")
     return true
 end
 
@@ -777,11 +777,17 @@ local function startNPCMonitor()
     NPCMonitoring = true
     NPCStatus.Text = "MONITORING"
     NPCStatus.TextColor3 = COLORS.green
-    addLog("NPC local countdown monitor started", "NPC")
+    addLog("NPC 15-minute auto-buy monitor started", "NPC")
 
-    if not NPCDeadline then
-        syncNPCFromGameLabel()
+    -- Always begin with a fresh local 15-minute interval.
+    -- The in-game "Restock in" label is intentionally not used.
+    NPCDeadline = npcClock() + 900
+    NPCLastSyncedText = "Local 15:00 interval"
+    updateNPCCountdownDisplay(900)
+    if NPCSource then
+        NPCSource.Text = "SOURCE  LOCAL 15-MINUTE INTERVAL"
     end
+    NPCAction.Text = "NEXT AUTOMATIC BUY IN 15:00"
 
     if NPCCountdownThreadRunning then return end
     NPCCountdownThreadRunning = true
@@ -815,17 +821,17 @@ local function startNPCMonitor()
                             NPCLastSyncedText = "Local 15:00 cycle"
                             updateNPCCountdownDisplay(900)
                             NPCAction.Text = "BATCH SENT  •  NEXT CYCLE 15:00"
-                            NPCSource.Text = "SOURCE  Local 15-minute countdown"
+                            NPCSource.Text = "SOURCE  LOCAL 15-MINUTE INTERVAL"
                         end
                     end
 
                     NPCTriggerPending = false
                 end
             else
-                NPCTimer.Text = "RESTOCK IN  --:--"
-                NPCSeconds.Text = "Open NPC trader to sync the timer"
-                NPCSource.Text = "SOURCE  No initial game sync"
-                NPCAction.Text = "WAITING FOR NPC TIMER"
+                NPCTimer.Text = "NEXT BUY IN  15:00"
+                NPCSeconds.Text = "15-minute automatic purchase interval"
+                NPCSource.Text = "SOURCE  LOCAL 15-MINUTE INTERVAL"
+                NPCAction.Text = "WAITING FOR MONITOR"
             end
 
             task.wait(0.2)
@@ -864,6 +870,11 @@ local Main = make("Frame", {
 }, ScreenGui)
 addCorner(Main, 14)
 addStroke(Main, COLORS.border, 1)
+
+-- Compact scaling for phones; desktop/tablet keeps the original dimensions.
+local MobileScale = make("UIScale", {
+    Scale = UserInputService.TouchEnabled and 0.78 or 1,
+}, Main)
 
 local Top = make("Frame", {
     Size=UDim2.new(1,0,0,58), BackgroundColor3=COLORS.panel,
@@ -1286,7 +1297,7 @@ local NPCHeader = make("Frame", {
 }, NPCPage)
 addCorner(NPCHeader, 10)
 
-local NPCTitle = label(NPCHeader, "NPC RESTOCK AUTOMATION", 13, COLORS.text, true)
+local NPCTitle = label(NPCHeader, "NPC AUTO BUY  /  15 MIN", 13, COLORS.text, true)
 NPCTitle.Position=UDim2.fromOffset(12,7)
 NPCTitle.Size=UDim2.new(1,-24,0,22)
 
@@ -1294,11 +1305,11 @@ NPCStatus = label(NPCHeader, "STOPPED", 9, COLORS.orange, true)
 NPCStatus.Position=UDim2.fromOffset(12,32)
 NPCStatus.Size=UDim2.fromOffset(120,18)
 
-NPCTimer = label(NPCHeader, "RESTOCK IN  --:--", 25, COLORS.text, true)
+NPCTimer = label(NPCHeader, "NEXT BUY IN  15:00", 25, COLORS.text, true)
 NPCTimer.Position=UDim2.fromOffset(12,54)
 NPCTimer.Size=UDim2.new(1,-24,0,36)
 
-NPCSeconds = label(NPCHeader, "Waiting for timer data...", 9, COLORS.blue, true)
+NPCSeconds = label(NPCHeader, "15-minute automatic purchase interval", 9, COLORS.blue, true)
 NPCSeconds.Position=UDim2.fromOffset(12,94)
 NPCSeconds.Size=UDim2.new(1,-24,0,20)
 
