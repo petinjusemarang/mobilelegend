@@ -558,7 +558,8 @@ local function parsePurchaseToast(text)
     local clean = text:gsub("\n"," "):gsub("%s+"," ")
     local qty, item, priceText = clean:match("Bought:%s*(%d+)%s*x%s*(.-)%s+for%s+%$%s*([%d,]+)")
     if not qty or not item or not priceText then return nil end
-    local price = tonumber(priceText:gsub(",",""))
+    local cleanPrice = (priceText:gsub(",",""))
+    local price = tonumber(cleanPrice)
     if not price then return nil end
     return {
         quantity=tonumber(qty), item=item:gsub("%s+$",""), price=price,
@@ -1033,7 +1034,8 @@ local AddWatch = button(Form, "ADD / UPDATE ITEM", function()
         local id = tostring(IdBox.Text or ""):gsub("^%s+", ""):gsub("%s+$", "")
         local name = tostring(NameBox.Text or ""):gsub("^%s+", ""):gsub("%s+$", "")
         local priceText = tostring(PriceBox.Text or "")
-        local price = tonumber(priceText:gsub("[%$,]", ""):gsub("%s+", ""))
+        local cleanedPrice = (priceText:gsub("[%$,]", ""):gsub("%s+", ""))
+        local price = tonumber(cleanedPrice)
 
         if id == "" then
             FormStatus.Text = "ERROR: Item ID required"
