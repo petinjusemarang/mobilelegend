@@ -1743,19 +1743,31 @@ if MobileLayout then
     PageArea.Position = UDim2.fromOffset(0,37)
     PageArea.Size = UDim2.new(1,0,1,-37)
 
-    -- Convert the two pages into vertical scrolling workspaces.
+    -- Mobile market workspace: one vertical page with separate WATCHLIST / ID LIST tabs.
+    -- Keep the outer page scrollable so the user can always swipe back to the top.
     local MarketScroll = make("ScrollingFrame", {
         Name="MobileMarketScroll",
         BackgroundTransparency=1,
         BorderSizePixel=0,
         Size=UDim2.fromScale(1,1),
-        CanvasSize=UDim2.new(0,0,0,1160),
-        ScrollBarThickness=3,
+        CanvasSize=UDim2.new(0,0,0,920),
+        ScrollBarThickness=4,
         ScrollBarImageColor3=COLORS.accent,
+        ScrollingDirection=Enum.ScrollingDirection.Y,
+        ScrollingEnabled=true,
+        Active=true,
+        ElasticBehavior=Enum.ElasticBehavior.WhenScrollable,
     }, MarketPage)
+    MarketScroll.AutomaticCanvasSize = Enum.AutomaticSize.None
+    MarketScroll.CanvasPosition = Vector2.new(0,0)
+
     MarketHeader.Parent = MarketScroll
     Form.Parent = MarketScroll
-    MarketColumns.Parent = MarketScroll
+    WatchPanel.Parent = MarketScroll
+    GridPanel.Parent = MarketScroll
+    LogPanel.Parent = MarketScroll
+    RightMarket.Visible = false
+    MarketColumns.Visible = false
 
     MarketHeader.Position = UDim2.fromOffset(0,0)
     MarketHeader.Size = UDim2.new(1,0,0,104)
@@ -1801,41 +1813,78 @@ if MobileLayout then
     FormStatus.Size = UDim2.new(1,-16,0,18)
     FormStatus.TextSize = 8
 
-    MarketColumns.Position = UDim2.fromOffset(0,290)
-    MarketColumns.Size = UDim2.new(1,0,0,875)
-    WatchPanel.Size = UDim2.new(1,0,0,420)
-    WatchHeading.Position = UDim2.fromOffset(10,5)
-    WatchHeading.Size = UDim2.new(1,-20,0,22)
-    WatchScroll.Position = UDim2.fromOffset(7,32)
-    WatchScroll.Size = UDim2.new(1,-14,1,-39)
-    WatchScroll.ScrollBarThickness = 3
-    RightMarket.Position = UDim2.fromOffset(0,430)
-    RightMarket.Size = UDim2.new(1,0,0,435)
-    GridPanel.Size = UDim2.new(1,0,0,270)
-    GridHeading.Position = UDim2.fromOffset(9,5)
-    GridHeading.Size = UDim2.new(1,-18,0,20)
-    GridHeading.TextSize = 11
-    GridStatus.Position = UDim2.fromOffset(9,27)
-    GridStatus.Size = UDim2.new(1,-18,0,18)
-    GridStatus.TextSize = 9
-    ScanGrid.Position = UDim2.fromOffset(8,50)
-    ScanGrid.Size = UDim2.new(0.48,-8,0,28)
-    CopyIDs.Position = UDim2.new(1,-8,0,50)
-    CopyIDs.Size = UDim2.new(0.48,-8,0,28)
-    SearchID.Position = UDim2.fromOffset(8,84)
-    SearchID.Size = UDim2.new(1,-16,0,30)
-    IDList.Position = UDim2.fromOffset(7,120)
-    IDList.Size = UDim2.new(1,-14,1,-127)
-    IDList.ScrollBarThickness = 3
+    local MarketListTabs = make("Frame", {
+        Name="MarketListTabs", BackgroundTransparency=1,
+        Position=UDim2.fromOffset(0,290), Size=UDim2.new(1,0,0,34),
+    }, MarketScroll)
+    local WatchTabButton = button(MarketListTabs,"WATCHLIST",function() end,COLORS.accent,100,30)
+    WatchTabButton.Position=UDim2.fromOffset(0,0)
+    WatchTabButton.Size=UDim2.new(0.5,-3,0,30)
+    WatchTabButton.TextSize=9
+    local IDsTabButton = button(MarketListTabs,"DISCOVERED IDS",function() end,COLORS.panel2,100,30)
+    IDsTabButton.Position=UDim2.new(0.5,3,0,0)
+    IDsTabButton.Size=UDim2.new(0.5,-3,0,30)
+    IDsTabButton.TextSize=9
 
-    LogPanel.Position = UDim2.fromOffset(0,280)
-    LogPanel.Size = UDim2.new(1,0,0,150)
-    LogHeading.Position = UDim2.fromOffset(9,4)
-    LogHeading.Size = UDim2.new(1,-18,0,20)
-    LogList.Position = UDim2.fromOffset(7,27)
-    LogList.Size = UDim2.new(1,-14,1,-34)
-    LogList.ScrollBarThickness = 3
-    MarketScroll.CanvasSize = UDim2.new(0,0,0,1170)
+    WatchPanel.Position=UDim2.fromOffset(0,330)
+    WatchPanel.Size=UDim2.new(1,0,0,390)
+    WatchHeading.Position=UDim2.fromOffset(10,5)
+    WatchHeading.Size=UDim2.new(1,-20,0,22)
+    WatchScroll.Position=UDim2.fromOffset(7,32)
+    WatchScroll.Size=UDim2.new(1,-14,1,-39)
+    WatchScroll.ScrollBarThickness=3
+    WatchScroll.ScrollingDirection=Enum.ScrollingDirection.Y
+    WatchScroll.ScrollingEnabled=true
+    WatchScroll.Active=true
+
+    GridPanel.Position=UDim2.fromOffset(0,330)
+    GridPanel.Size=UDim2.new(1,0,0,390)
+    GridPanel.Visible=false
+    GridHeading.Position=UDim2.fromOffset(9,5)
+    GridHeading.Size=UDim2.new(1,-18,0,20)
+    GridHeading.TextSize=11
+    GridStatus.Position=UDim2.fromOffset(9,27)
+    GridStatus.Size=UDim2.new(1,-18,0,18)
+    GridStatus.TextSize=9
+    ScanGrid.Position=UDim2.fromOffset(8,50)
+    ScanGrid.Size=UDim2.new(0.48,-8,0,28)
+    CopyIDs.Position=UDim2.new(1,-8,0,50)
+    CopyIDs.Size=UDim2.new(0.48,-8,0,28)
+    SearchID.Position=UDim2.fromOffset(8,84)
+    SearchID.Size=UDim2.new(1,-16,0,30)
+    IDList.Position=UDim2.fromOffset(7,120)
+    IDList.Size=UDim2.new(1,-14,1,-127)
+    IDList.ScrollBarThickness=3
+    IDList.ScrollingDirection=Enum.ScrollingDirection.Y
+    IDList.ScrollingEnabled=true
+    IDList.Active=true
+
+    LogPanel.Parent=MarketScroll
+    LogPanel.Position=UDim2.fromOffset(0,730)
+    LogPanel.Size=UDim2.new(1,0,0,150)
+    LogHeading.Position=UDim2.fromOffset(9,4)
+    LogHeading.Size=UDim2.new(1,-18,0,20)
+    LogList.Position=UDim2.fromOffset(7,27)
+    LogList.Size=UDim2.new(1,-14,1,-34)
+    LogList.ScrollBarThickness=3
+
+    local function setMarketList(which)
+        local showWatch = which == "WATCH"
+        WatchPanel.Visible = showWatch
+        GridPanel.Visible = not showWatch
+        WatchTabButton.BackgroundColor3 = showWatch and COLORS.accent or COLORS.panel2
+        IDsTabButton.BackgroundColor3 = showWatch and COLORS.panel2 or COLORS.accent
+        MarketScroll.CanvasPosition = Vector2.new(0,0)
+    end
+    WatchTabButton.Activated:Connect(function() setMarketList("WATCH") end)
+    IDsTabButton.Activated:Connect(function() setMarketList("IDS") end)
+    setMarketList("WATCH")
+
+    -- Explicit touch scrolling configuration fixes the page getting stuck mid-list.
+    MarketScroll.CanvasSize = UDim2.new(0,0,0,890)
+    MarketScroll.CanvasPosition = Vector2.new(0,0)
+    MarketScroll.ScrollingEnabled = true
+    MarketScroll.Active = true
 
     -- NPC page: timer and controls first, then a vertically stacked ammo queue.
     local NPCScroll = make("ScrollingFrame", {
