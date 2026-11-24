@@ -141,6 +141,9 @@ local AMMO_PRESET_VERSION = 2
 -- Preset auto-load settings (persisted in the same config file).
 local AutoLoadPresetEnabled = SavedState and SavedState.autoLoadPresetEnabled == true or false
 local SelectedPreset = SavedState and SavedState.selectedPreset == "new_map" and "new_map" or "overture"
+local AutoStartMarket = not SavedState or SavedState.autoStartMarket ~= false
+local AutoStartNPC = not SavedState or SavedState.autoStartNPC ~= false
+local BuyAllOnExecute = not SavedState or SavedState.buyAllOnExecute ~= false
 local PresetLoadBusy = false
 local LastPresetMapState = false
 
@@ -234,6 +237,9 @@ local function saveState()
         antiAFK=AntiAFKEnabled, ammoEnabled={}, ammoPresetVersion=2,
         autoLoadPresetEnabled=AutoLoadPresetEnabled,
         selectedPreset=SelectedPreset,
+        autoStartMarket=AutoStartMarket,
+        autoStartNPC=AutoStartNPC,
+        buyAllOnExecute=BuyAllOnExecute,
     }
     for _, ammo in ipairs(ammoList) do
         state.ammoEnabled[ammo.offer] = ammo.enabled == true
@@ -1120,6 +1126,7 @@ end
 local HomeTab = makeTab("⌂  HOME", 0)
 local MarketTab = makeTab("◈  AUTO SNIPE MARKET", 220)
 local NPCTab = makeTab("◉  AUTO BUY FROM NPC", 440)
+local SettingsTab = makeTab("⚙  SETTINGS", 660)
 
 local PageArea = make("Frame", {
     BackgroundTransparency=1, Position=UDim2.fromOffset(0,54),
@@ -1138,23 +1145,32 @@ local NPCPage = make("Frame", {
     BackgroundTransparency=1, Size=UDim2.fromScale(1,1), Visible=false,
 }, PageArea)
 
+local SettingsPage = make("Frame", {
+    BackgroundTransparency=1, Size=UDim2.fromScale(1,1), Visible=false,
+}, PageArea)
+
 local syncNPCFromGameLabel -- assigned after NPC timer UI is created
 
 local function showTab(which)
     local home = which == "HOME"
     local market = which == "MARKET"
+    local npc = which == "NPC"
+    local settings = which == "SETTINGS"
     HomePage.Visible = home
     MarketPage.Visible = market
-    NPCPage.Visible = not home and not market
+    NPCPage.Visible = npc
+    SettingsPage.Visible = settings
     HomeTab.BackgroundColor3 = home and COLORS.accent or COLORS.panel2
     MarketTab.BackgroundColor3 = market and COLORS.accent or COLORS.panel2
-    NPCTab.BackgroundColor3 = (not home and not market) and COLORS.accent or COLORS.panel2
+    NPCTab.BackgroundColor3 = npc and COLORS.accent or COLORS.panel2
+    SettingsTab.BackgroundColor3 = settings and COLORS.accent or COLORS.panel2
 
     -- Do not resync the NPC timer when switching tabs; its deadline stays stable.
 end
 HomeTab.Activated:Connect(function() showTab("HOME") end)
 MarketTab.Activated:Connect(function() showTab("MARKET") end)
 NPCTab.Activated:Connect(function() showTab("NPC") end)
+SettingsTab.Activated:Connect(function() showTab("SETTINGS") end)
 
 --==================================================
 -- HOME PAGE UI
@@ -1931,6 +1947,87 @@ AntiAFKButton.Position=UDim2.new(1,-340,0,18)
 -- PURCHASE REPORT INITIALIZATION / TOAST WATCHER
 --==================================================
 
+--==================================================
+-- SETTINGS PAGE
+--==================================================
+
+local SettingsPanel = make("Frame", {
+    BackgroundColor3=COLORS.panel, Size=UDim2.new(1,0,0,390),
+    BorderSizePixel=0,
+}, SettingsPage)
+addCorner(SettingsPanel, 10)
+
+local SettingsTitle = label(SettingsPanel, "AUTOMATION SETTINGS", 16, COLORS.text, true)
+SettingsTitle.Position = UDim2.fromOffset(18,14)
+SettingsTitle.Size = UDim2.new(1,-36,0,28)
+
+local SettingsSubtitle = label(SettingsPanel,
+    "Choose which automation should run automatically when this script is executed.",
+    10, COLORS.muted, false)
+SettingsSubtitle.Position = UDim2.fromOffset(18,45)
+SettingsSubtitle.Size = UDim2.new(1,-36,0,22)
+
+local function makeSettingRow(y, titleText, description, getter, setter)
+    local row = make("Frame", {
+        BackgroundColor3=COLORS.panel2,
+        Position=UDim2.fromOffset(16,y),
+        Size=UDim2.new(1,-32,0,76),
+        BorderSizePixel=0,
+    }, SettingsPanel)
+    addCorner(row, 8)
+
+    local heading = label(row, titleText, 12, COLORS.text, true)
+    heading.Position = UDim2.fromOffset(13,9)
+    heading.Size = UDim2.new(1,-170,0,22)
+
+    local detail = label(row, description, 9, COLORS.muted, false)
+    detail.Position = UDim2.fromOffset(13,34)
+    detail.Size = UDim2.new(1,-175,0,28)
+    detail.TextWrapped = true
+    detail.TextYAlignment = Enum.TextYAlignment.Top
+
+    local toggle
+    toggle = button(row, getter() and "ON" or "OFF", function()
+        setter(not getter())
+        toggle.Text = getter() and "ON" or "OFF"
+        toggle.BackgroundColor3 = getter() and COLORS.green or COLORS.panel3
+        saveState()
+        addLog(titleText .. " set to " .. (getter() and "ON" or "OFF"), "SETTINGS")
+    end, getter() and COLORS.green or COLORS.panel3, 92, 34)
+    toggle.AnchorPoint = Vector2.new(1,0.5)
+    toggle.Position = UDim2.new(1,-14,0.5,0)
+    return toggle
+end
+
+makeSettingRow(82,
+    "AUTO SNIPE MARKET",
+    "Automatically start the market watchlist scanner after execution.",
+    function() return AutoStartMarket end,
+    function(value) AutoStartMarket = value end
+)
+
+makeSettingRow(168,
+    "AUTO RESTOCK BUY",
+    "Automatically start the NPC restock monitor and buy enabled queue items on each cycle.",
+    function() return AutoStartNPC end,
+    function(value) AutoStartNPC = value end
+)
+
+makeSettingRow(254,
+    "BUY ALL ON EXECUTE",
+    "Send one initial BUY ALL NOW batch when the script is first executed.",
+    function() return BuyAllOnExecute end,
+    function(value) BuyAllOnExecute = value end
+)
+
+local SettingsFootnote = label(SettingsPanel,
+    "Settings are saved automatically when executor file APIs are available. Manual START / STOP buttons remain available.",
+    9, COLORS.muted, false)
+SettingsFootnote.Position = UDim2.fromOffset(18,344)
+SettingsFootnote.Size = UDim2.new(1,-36,0,32)
+SettingsFootnote.TextWrapped = true
+SettingsFootnote.TextYAlignment = Enum.TextYAlignment.Top
+
 local function refreshPurchaseTotals()
     PurchaseTotalSpent, PurchaseTotalUnits = 0,0
     for _, r in ipairs(PurchaseRecords) do
@@ -1989,25 +2086,31 @@ local function runInitialStartup()
             return
         end
 
-        addLog("First execution: running initial BUY ALL NOW batch", "STARTUP")
-        buyAllNPCAmmo(true)
-
-        -- The batch function yields between requests; wait briefly before enabling monitors.
-        task.wait(0.5)
+        if BuyAllOnExecute then
+            addLog("First execution: running initial BUY ALL NOW batch", "STARTUP")
+            buyAllNPCAmmo(true)
+            task.wait(0.5)
+        else
+            addLog("Initial BUY ALL NOW skipped (disabled in Settings)", "STARTUP")
+        end
 
         if not ScreenGui or not ScreenGui.Parent then
             StartupAutomationActive = false
             return
         end
 
-        if not Monitoring then
+        if AutoStartMarket and not Monitoring then
             startMarketMonitor()
             addLog("Startup auto-start: Market Monitor ON", "STARTUP")
+        elseif not AutoStartMarket then
+            addLog("Market Monitor auto-start disabled in Settings", "STARTUP")
         end
 
-        if not NPCMonitoring then
+        if AutoStartNPC and not NPCMonitoring then
             startNPCMonitor()
             addLog("Startup auto-start: NPC Restock Monitor ON", "STARTUP")
+        elseif not AutoStartNPC then
+            addLog("NPC Restock Monitor auto-start disabled in Settings", "STARTUP")
         end
 
         StartupAutomationActive = false
