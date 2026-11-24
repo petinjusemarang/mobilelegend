@@ -138,6 +138,12 @@ end
 local SavedState = loadState()
 local AMMO_PRESET_VERSION = 2
 
+-- Preset auto-load settings (persisted in the same config file).
+local AutoLoadPresetEnabled = SavedState and SavedState.autoLoadPresetEnabled == true or false
+local SelectedPreset = SavedState and SavedState.selectedPreset == "new_map" and "new_map" or "overture"
+local PresetLoadBusy = false
+local LastPresetMapState = false
+
 -- First run of this preset: 3 required 12GA buck types ON, remaining 12GA OFF,
 -- and every .308 type ON. Later launches restore the user's saved toggles.
 if not SavedState or SavedState.ammoPresetVersion ~= AMMO_PRESET_VERSION then
@@ -226,6 +232,8 @@ local function saveState()
         watchlist={}, discoveredIDs=DiscoveredIDs,
         purchases=PurchaseRecords, requestDelay=CONFIG.RequestDelay,
         antiAFK=AntiAFKEnabled, ammoEnabled={}, ammoPresetVersion=2,
+        autoLoadPresetEnabled=AutoLoadPresetEnabled,
+        selectedPreset=SelectedPreset,
     }
     for _, ammo in ipairs(ammoList) do
         state.ammoEnabled[ammo.offer] = ammo.enabled == true
@@ -319,6 +327,11 @@ local function addLog(message, category)
     table.insert(ActivityLog, 1, entry)
     while #ActivityLog > 150 do table.remove(ActivityLog) end
     print("[HUSH CONTROL] " .. entry)
+    if HomeRecentText then
+        local recent = {}
+        for i = 1, math.min(5, #ActivityLog) do table.insert(recent, ActivityLog[i]) end
+        HomeRecentText.Text = #recent > 0 and table.concat(recent, "\\n") or "No activity yet."
+    end
     if LogList then
         for _, child in ipairs(LogList:GetChildren()) do
             if child:IsA("TextLabel") then child:Destroy() end
@@ -936,6 +949,92 @@ local function stopNPCMonitor()
 end
 
 --==================================================
+-- PRESET AUTO-LOAD
+--==================================================
+
+local PresetDefinitions = {
+    overture = {label="OVERTURE", row=2, req="preset_load_2"},
+    new_map = {label="NEW MAP", row=1, req="preset_load_3"},
+}
+
+local function loadSelectedPreset(source)
+    if PresetLoadBusy then
+        addLog("Preset load skipped: another preset request is running", "PRESET")
+        return false
+    end
+
+    local preset = PresetDefinitions[SelectedPreset]
+    if not preset then
+        addLog("Preset load failed: unknown preset selection", "ERROR")
+        return false
+    end
+
+    PresetLoadBusy = true
+    local ok, err = pcall(function()
+        if not MenuOp or not MenuOp:IsA("RemoteEvent") then
+            error("HushNet.menu.op is missing or is not a RemoteEvent")
+        end
+        local args = {
+            [1] = {
+                ["back"] = true,
+                ["op"] = "presetLoad",
+                ["row"] = preset.row,
+                ["req"] = preset.req
+            }
+        }
+        MenuOp:FireServer(unpack(args))
+    end)
+    PresetLoadBusy = false
+
+    if ok then
+        addLog(preset.label .. " preset request fired (" .. tostring(source or "manual") .. ")", "PRESET")
+        return true
+    end
+
+    addLog("Preset load request failed: " .. tostring(err), "ERROR")
+    return false
+end
+
+local function setSelectedPreset(key)
+    if not PresetDefinitions[key] then return end
+    SelectedPreset = key
+    saveState()
+    if PresetSelectionStatus then
+        PresetSelectionStatus.Text = "SELECTED  •  " .. PresetDefinitions[key].label
+    end
+    addLog("Preset selection saved: " .. PresetDefinitions[key].label, "PRESET")
+end
+
+local function setAutoLoadPreset(enabled)
+    AutoLoadPresetEnabled = enabled == true
+    saveState()
+    if AutoLoadToggle then
+        AutoLoadToggle.Text = AutoLoadPresetEnabled and "AUTOLOAD ON" or "AUTOLOAD OFF"
+        AutoLoadToggle.BackgroundColor3 = AutoLoadPresetEnabled and COLORS.green or COLORS.panel3
+    end
+    addLog("Preset auto-load " .. (AutoLoadPresetEnabled and "enabled" or "disabled"), "PRESET")
+end
+
+local function isInGameMap()
+    -- HushLocal is the in-map runtime folder used by the Hush game.
+    return workspace:FindFirstChild("HushLocal") ~= nil
+end
+
+task.spawn(function()
+    while true do
+        task.wait(1)
+        local inMap = isInGameMap()
+        if inMap and not LastPresetMapState and AutoLoadPresetEnabled then
+            task.wait(1.5) -- allow the map/trader remotes to finish initializing
+            if AutoLoadPresetEnabled and isInGameMap() then
+                loadSelectedPreset("map entry")
+            end
+        end
+        LastPresetMapState = inMap
+    end
+end)
+
+--==================================================
 -- GUI ROOT / DESKTOP LAYOUT
 --==================================================
 
@@ -1018,16 +1117,21 @@ local function makeTab(text, x)
     return b
 end
 
-local MarketTab = makeTab("◈  AUTO SNIPE MARKET", 0)
-local NPCTab = makeTab("◉  AUTO BUY FROM NPC", 220)
+local HomeTab = makeTab("⌂  HOME", 0)
+local MarketTab = makeTab("◈  AUTO SNIPE MARKET", 220)
+local NPCTab = makeTab("◉  AUTO BUY FROM NPC", 440)
 
 local PageArea = make("Frame", {
     BackgroundTransparency=1, Position=UDim2.fromOffset(0,54),
     Size=UDim2.new(1,0,1,-54),
 }, Body)
 
-local MarketPage = make("Frame", {
+local HomePage = make("Frame", {
     BackgroundTransparency=1, Size=UDim2.fromScale(1,1), Visible=true,
+}, PageArea)
+
+local MarketPage = make("Frame", {
+    BackgroundTransparency=1, Size=UDim2.fromScale(1,1), Visible=false,
 }, PageArea)
 
 local NPCPage = make("Frame", {
@@ -1037,17 +1141,196 @@ local NPCPage = make("Frame", {
 local syncNPCFromGameLabel -- assigned after NPC timer UI is created
 
 local function showTab(which)
+    local home = which == "HOME"
     local market = which == "MARKET"
+    HomePage.Visible = home
     MarketPage.Visible = market
-    NPCPage.Visible = not market
+    NPCPage.Visible = not home and not market
+    HomeTab.BackgroundColor3 = home and COLORS.accent or COLORS.panel2
     MarketTab.BackgroundColor3 = market and COLORS.accent or COLORS.panel2
-    NPCTab.BackgroundColor3 = market and COLORS.panel2 or COLORS.accent
+    NPCTab.BackgroundColor3 = (not home and not market) and COLORS.accent or COLORS.panel2
 
-    -- Do not resync the NPC timer when switching tabs; the local 15-minute
-    -- deadline must remain stable for the entire monitoring cycle.
+    -- Do not resync the NPC timer when switching tabs; its deadline stays stable.
 end
+HomeTab.Activated:Connect(function() showTab("HOME") end)
 MarketTab.Activated:Connect(function() showTab("MARKET") end)
 NPCTab.Activated:Connect(function() showTab("NPC") end)
+
+--==================================================
+-- HOME PAGE UI
+--==================================================
+
+local HomeIntro = make("Frame", {
+    BackgroundColor3=COLORS.panel, Size=UDim2.new(1,0,0,82),
+    BorderSizePixel=0,
+}, HomePage)
+addCorner(HomeIntro, 10)
+
+local HomeTitle = label(HomeIntro, "HUSH CONTROL CENTER", 18, COLORS.text, true)
+HomeTitle.Position = UDim2.fromOffset(18,10)
+HomeTitle.Size = UDim2.new(1,-36,0,28)
+
+local HomeSubtitle = label(HomeIntro, "OVERVIEW  •  MARKET WATCH  •  NPC RESTOCK  •  PRESET MANAGER", 10, COLORS.muted, false)
+HomeSubtitle.Position = UDim2.fromOffset(19,43)
+HomeSubtitle.Size = UDim2.new(1,-38,0,20)
+
+local HomeStats = make("Frame", {
+    BackgroundTransparency=1, Position=UDim2.fromOffset(0,94),
+    Size=UDim2.new(1,0,0,116),
+}, HomePage)
+
+local function homeStatCard(parent, titleText, xScale, widthScale)
+    local card = make("Frame", {
+        BackgroundColor3=COLORS.panel, Position=UDim2.new(xScale,0,0,0),
+        Size=UDim2.new(widthScale,-8,1,0), BorderSizePixel=0,
+    }, parent)
+    addCorner(card, 9)
+    local heading = label(card, titleText, 10, COLORS.muted, true)
+    heading.Position = UDim2.fromOffset(12,10)
+    heading.Size = UDim2.new(1,-24,0,18)
+    local value = label(card, "--", 21, COLORS.text, true)
+    value.Position = UDim2.fromOffset(12,36)
+    value.Size = UDim2.new(1,-24,0,32)
+    local detail = label(card, "", 9, COLORS.muted, false)
+    detail.Position = UDim2.fromOffset(12,73)
+    detail.Size = UDim2.new(1,-24,0,22)
+    return value, detail
+end
+
+local HomeMarketValue, HomeMarketDetail = homeStatCard(HomeStats, "MARKET MONITOR", 0, 0.25)
+local HomeWatchValue, HomeWatchDetail = homeStatCard(HomeStats, "WATCHLIST", 0.25, 0.25)
+local HomeNPCValue, HomeNPCDetail = homeStatCard(HomeStats, "NPC AUTO BUY", 0.50, 0.25)
+local HomePurchaseValue, HomePurchaseDetail = homeStatCard(HomeStats, "CONFIRMED PURCHASES", 0.75, 0.25)
+
+local PresetPanel = make("Frame", {
+    BackgroundColor3=COLORS.panel, Position=UDim2.fromOffset(0,222),
+    Size=UDim2.new(0.58,-7,1,-222), BorderSizePixel=0,
+}, HomePage)
+addCorner(PresetPanel, 9)
+
+local PresetHeading = label(PresetPanel, "MAP PRESET AUTO-LOAD", 13, COLORS.text, true)
+PresetHeading.Position = UDim2.fromOffset(15,12)
+PresetHeading.Size = UDim2.new(1,-30,0,24)
+
+local PresetDescription = label(PresetPanel, "Choose which saved in-game preset should load automatically when HushLocal appears (map entry).", 10, COLORS.muted, false)
+PresetDescription.Position = UDim2.fromOffset(15,42)
+PresetDescription.Size = UDim2.new(1,-30,0,42)
+PresetDescription.TextWrapped = true
+PresetDescription.TextYAlignment = Enum.TextYAlignment.Top
+
+local OvertureButton = button(PresetPanel, "OVERTURE  •  ROW 2", function()
+    setSelectedPreset("overture")
+end, SelectedPreset == "overture" and COLORS.accent or COLORS.panel3, 180, 34)
+OvertureButton.Position = UDim2.fromOffset(15,98)
+
+local NewMapButton = button(PresetPanel, "NEW MAP  •  ROW 1", function()
+    setSelectedPreset("new_map")
+end, SelectedPreset == "new_map" and COLORS.accent or COLORS.panel3, 180, 34)
+NewMapButton.Position = UDim2.fromOffset(205,98)
+
+PresetSelectionStatus = label(PresetPanel, "SELECTED  •  " .. PresetDefinitions[SelectedPreset].label, 10, COLORS.blue, true)
+PresetSelectionStatus.Position = UDim2.fromOffset(15,145)
+PresetSelectionStatus.Size = UDim2.new(1,-30,0,20)
+
+AutoLoadToggle = button(PresetPanel, AutoLoadPresetEnabled and "AUTOLOAD ON" or "AUTOLOAD OFF", function()
+    setAutoLoadPreset(not AutoLoadPresetEnabled)
+end, AutoLoadPresetEnabled and COLORS.green or COLORS.panel3, 130, 34)
+AutoLoadToggle.Position = UDim2.fromOffset(15,180)
+
+local LoadPresetNow = button(PresetPanel, "LOAD SELECTED NOW", function()
+    loadSelectedPreset("manual button")
+end, COLORS.blue, 160, 34)
+LoadPresetNow.Position = UDim2.fromOffset(155,180)
+
+local PresetFootnote = label(PresetPanel, "Settings are stored in the Hush Control Center config file when executor file APIs are available.", 9, COLORS.muted, false)
+PresetFootnote.Position = UDim2.fromOffset(15,226)
+PresetFootnote.Size = UDim2.new(1,-30,0,34)
+PresetFootnote.TextWrapped = true
+
+local HomeRight = make("Frame", {
+    BackgroundTransparency=1, Position=UDim2.new(0.58,7,0,222),
+    Size=UDim2.new(0.42,-7,1,-222),
+}, HomePage)
+
+local HomeStatusPanel = make("Frame", {
+    BackgroundColor3=COLORS.panel, Size=UDim2.new(1,0,0,132),
+    BorderSizePixel=0,
+}, HomeRight)
+addCorner(HomeStatusPanel, 9)
+
+local HomeStatusHeading = label(HomeStatusPanel, "SYSTEM STATUS", 12, COLORS.text, true)
+HomeStatusHeading.Position = UDim2.fromOffset(14,10)
+HomeStatusHeading.Size = UDim2.new(1,-28,0,22)
+
+HomeStatusText = label(HomeStatusPanel, "READY", 10, COLORS.green, true)
+HomeStatusText.Position = UDim2.fromOffset(14,40)
+HomeStatusText.Size = UDim2.new(1,-28,0,20)
+
+HomeMapText = label(HomeStatusPanel, "MAP  •  CHECKING...", 10, COLORS.muted, false)
+HomeMapText.Position = UDim2.fromOffset(14,68)
+HomeMapText.Size = UDim2.new(1,-28,0,20)
+
+HomePresetText = label(HomeStatusPanel, "PRESET AUTOLOAD  •  OFF", 10, COLORS.muted, false)
+HomePresetText.Position = UDim2.fromOffset(14,94)
+HomePresetText.Size = UDim2.new(1,-28,0,20)
+
+local HomeRecentPanel = make("Frame", {
+    BackgroundColor3=COLORS.panel, Position=UDim2.new(0,0,0,142),
+    Size=UDim2.new(1,0,1,-142), BorderSizePixel=0,
+}, HomeRight)
+addCorner(HomeRecentPanel, 9)
+
+local HomeRecentHeading = label(HomeRecentPanel, "LATEST ACTIVITY", 11, COLORS.text, true)
+HomeRecentHeading.Position = UDim2.fromOffset(14,9)
+HomeRecentHeading.Size = UDim2.new(1,-28,0,22)
+
+HomeRecentText = label(HomeRecentPanel, "No activity yet.", 9, COLORS.muted, false)
+HomeRecentText.Position = UDim2.fromOffset(14,38)
+HomeRecentText.Size = UDim2.new(1,-28,1,-48)
+HomeRecentText.TextWrapped = true
+HomeRecentText.TextYAlignment = Enum.TextYAlignment.Top
+
+local function refreshHomePage()
+    if not HomeMarketValue then return end
+    HomeMarketValue.Text = Monitoring and "ACTIVE" or "IDLE"
+    HomeMarketValue.TextColor3 = Monitoring and COLORS.green or COLORS.orange
+    HomeMarketDetail.Text = "Scans: " .. tostring(TotalScans)
+
+    local enabledWatch = 0
+    for _, item in ipairs(Watchlist) do
+        if item.enabled then enabledWatch += 1 end
+    end
+    HomeWatchValue.Text = tostring(enabledWatch) .. " / " .. tostring(#Watchlist)
+    HomeWatchDetail.Text = "Enabled items"
+
+    HomeNPCValue.Text = NPCMonitoring and "ACTIVE" or "IDLE"
+    HomeNPCValue.TextColor3 = NPCMonitoring and COLORS.green or COLORS.orange
+    HomeNPCDetail.Text = "Types: " .. tostring(getEnabledAmmoCount())
+
+    HomePurchaseValue.Text = tostring(#PurchaseRecords)
+    HomePurchaseDetail.Text = "Units: " .. tostring(PurchaseTotalUnits) .. "  •  $" .. formatNumber(PurchaseTotalSpent)
+
+    HomeStatusText.Text = "SYSTEM  •  " .. ((Monitoring or NPCMonitoring) and "RUNNING" or "READY")
+    HomeStatusText.TextColor3 = (Monitoring or NPCMonitoring) and COLORS.green or COLORS.orange
+    HomeMapText.Text = isInGameMap() and "MAP  •  IN GAME" or "MAP  •  LOBBY / WAITING"
+    HomePresetText.Text = "PRESET AUTOLOAD  •  " .. (AutoLoadPresetEnabled and PresetDefinitions[SelectedPreset].label or "OFF")
+
+    local recent = {}
+    for i = 1, math.min(5, #ActivityLog) do
+        table.insert(recent, ActivityLog[i])
+    end
+    HomeRecentText.Text = #recent > 0 and table.concat(recent, "\\n") or "No activity yet."
+
+    OvertureButton.BackgroundColor3 = SelectedPreset == "overture" and COLORS.accent or COLORS.panel3
+    NewMapButton.BackgroundColor3 = SelectedPreset == "new_map" and COLORS.accent or COLORS.panel3
+end
+
+task.spawn(function()
+    while ScreenGui and ScreenGui.Parent do
+        refreshHomePage()
+        task.wait(1)
+    end
+end)
 
 --==================================================
 -- MARKET PAGE UI
@@ -1677,10 +1960,63 @@ watchPurchaseContainer(PlayerGui)
 refreshWatchlist()
 refreshIDList()
 saveState()
-showTab("MARKET")
+showTab("HOME")
 addLog("Hush Control Center initialized", "SYSTEM")
 addLog("Market API: menu.get / bmItem; buy op: bmBuyBest", "SYSTEM")
 addLog("NPC queue loaded: 5x 12GA + 6x .308", "SYSTEM")
+
+-- Startup automation:
+-- Every execution (whether currently in lobby or in a map):
+-- 1) Run one initial BUY ALL NOW batch.
+-- 2) Start Market Monitor automatically.
+-- 3) Start NPC Restock Monitor automatically.
+-- Map/lobby transitions do not restart the initial batch or duplicate monitor loops.
+
+local InitialStartupDone = false
+local StartupAutomationActive = false
+
+local function runInitialStartup()
+    if InitialStartupDone or StartupAutomationActive then return end
+    StartupAutomationActive = true
+    InitialStartupDone = true
+
+    task.spawn(function()
+        -- Give the GUI and all status labels time to finish initializing.
+        task.wait(1.5)
+
+        if not ScreenGui or not ScreenGui.Parent then
+            StartupAutomationActive = false
+            return
+        end
+
+        addLog("First execution: running initial BUY ALL NOW batch", "STARTUP")
+        buyAllNPCAmmo(true)
+
+        -- The batch function yields between requests; wait briefly before enabling monitors.
+        task.wait(0.5)
+
+        if not ScreenGui or not ScreenGui.Parent then
+            StartupAutomationActive = false
+            return
+        end
+
+        if not Monitoring then
+            startMarketMonitor()
+            addLog("Startup auto-start: Market Monitor ON", "STARTUP")
+        end
+
+        if not NPCMonitoring then
+            startNPCMonitor()
+            addLog("Startup auto-start: NPC Restock Monitor ON", "STARTUP")
+        end
+
+        StartupAutomationActive = false
+        addLog("Startup automation completed", "STARTUP")
+    end)
+end
+
+-- Start once after the complete interface has been created.
+runInitialStartup()
 
 task.spawn(function()
     task.wait(2)
