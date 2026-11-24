@@ -1,6 +1,6 @@
 --[[
 ========================================================
-             OVERTURE MAP HELPER v1.1
+             OVERTURE MAP HELPER v1.2
 ========================================================
 Based on the exact Environment Override and Hush Camera
 Zoom functions from VEZA GUI v3.4.
@@ -14,6 +14,7 @@ Zoom functions from VEZA GUI v3.4.
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Player = Players.LocalPlayer
 local PlayerGui = Player:WaitForChild("PlayerGui")
@@ -234,7 +235,7 @@ local gui = create("ScreenGui", {
 
 local main = create("Frame", {
     Name = "Main",
-    Size = UDim2.fromOffset(270, 205),
+    Size = UDim2.fromOffset(270, 225),
     Position = UDim2.new(0, 22, 0.35, 0),
     BackgroundColor3 = Theme.Background,
     BackgroundTransparency = 0.05,
@@ -362,6 +363,17 @@ local zoomStatus = create("TextLabel", {
     TextXAlignment = Enum.TextXAlignment.Left
 }, main)
 
+local waypointStatus = create("TextLabel", {
+    BackgroundTransparency = 1,
+    Position = UDim2.fromOffset(13, 190),
+    Size = UDim2.new(1, -26, 0, 17),
+    Font = Enum.Font.Gotham,
+    Text = "WAYPOINT: WAITING...",
+    TextSize = 9,
+    TextColor3 = Theme.Muted,
+    TextXAlignment = Enum.TextXAlignment.Left
+}, main)
+
 local function updateToggle(toggle, enabled, onText, offText)
     toggle.Text = enabled and onText or offText
     toggle.BackgroundColor3 = enabled and Theme.Accent or Theme.Border
@@ -423,6 +435,50 @@ end
 local function setZoomStatus(message, active)
     zoomStatus.Text = "STATUS: " .. message
     zoomStatus.TextColor3 = active and Theme.Accent or Theme.Muted
+end
+
+--========================================================
+-- AUTO PING WAYPOINT (ONCE WHEN EXECUTED)
+--========================================================
+
+local function sendOvertureWaypoint()
+    waypointStatus.Text = "WAYPOINT: SENDING..."
+    waypointStatus.TextColor3 = Theme.Muted
+
+    task.spawn(function()
+        local ok, result = pcall(function()
+            local hushNet = ReplicatedStorage:WaitForChild("HushNet", 15)
+            assert(hushNet, "HushNet not found")
+
+            local pingRemote = hushNet:WaitForChild("comm.ping", 15)
+            assert(pingRemote, "comm.ping not found")
+            assert(pingRemote:IsA("RemoteEvent"), "comm.ping is not a RemoteEvent")
+
+            local args = {
+                [1] = {
+                    ["kind"] = "waypoint",
+                    ["fixed"] = true,
+                    ["pos"] = Vector3.new(
+                        97.73350524902344,
+                        12.699987411499023,
+                        -226.89431762695312
+                    )
+                }
+            }
+
+            pingRemote:FireServer(unpack(args))
+        end)
+
+        if ok then
+            waypointStatus.Text = "WAYPOINT: PING SENT"
+            waypointStatus.TextColor3 = Theme.Accent
+            print("[OVERTURE HELPER] Auto waypoint ping sent")
+        else
+            waypointStatus.Text = "WAYPOINT: FAILED"
+            waypointStatus.TextColor3 = Theme.Red
+            warn("[OVERTURE HELPER] Auto waypoint failed: " .. tostring(result))
+        end
+    end)
 end
 
 track(environmentToggle.MouseButton1Click:Connect(function()
@@ -505,6 +561,8 @@ track(closeButton.MouseButton1Click:Connect(cleanup))
 updateToggle(environmentToggle, forceDayNoSnowEnabled, "ON", "OFF")
 updateToggle(zoomToggle, ZoomEnabled, "ON", "OFF")
 
+sendOvertureWaypoint()
+
 task.spawn(function()
     while running and gui.Parent and forceDayNoSnowEnabled do
         local ok, message = applyDayNoSnow()
@@ -534,4 +592,5 @@ end)
 
 print("[OVERTURE HELPER] Force Day + No Snow: AUTO ON")
 print("[OVERTURE HELPER] Hush Camera Zoom: AUTO ON")
+print("[OVERTURE HELPER] Auto Ping Waypoint: SENT ON EXECUTE")
 print("[OVERTURE HELPER] Loaded")
