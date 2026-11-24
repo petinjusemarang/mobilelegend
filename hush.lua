@@ -1,1505 +1,3106 @@
+
 --[[
-HUSH CONTROL CENTER V1
-PC DESKTOP EDITION
-Tabs:
-  1. AUTO SNIPE MARKET
-  2. AUTO BUY FROM NPC
+========================================================
+                     VEZA GUI v3.4
+========================================================
+MODULES
+  1. Vehicle Tracker
+  2. Distance Settings
+  3. Zombie ESP
+  4. Vehicle ESP + Selected Vehicle Tracer
 
-Market features:
-- Default + custom watchlist
-- Per-item max price
-- Market listing scan and optional auto-buy
-- Priority item (one at a time)
-- Market grid ID discovery
-- Activity log and purchase toast report
-- Persistent settings when executor file APIs exist
+VEHICLE TRACKER
+  - Vehicle name
+  - Distance in studs
+  - Relative direction
+  - Select target
+  - Live updates
+  - Configurable scan radius
 
-NPC features:
-- Uses a local 15-minute countdown; does not depend on the game's restock label
-- Displays the next automatic buy countdown clearly
-- At 00:00, waits 3 seconds, then sends the 11 configured ammo requests
-- Starts another 15-minute interval after each automatic batch
+ZOMBIE ESP
+  - Green Highlight
+  - Automatic zombie detection
+  - Toggle ON / OFF
+  - Cleanup on disable
 
-Use only where permitted by the game's rules.
+GUI
+  - Modular sidebar
+  - Draggable
+  - Minimize / Close
+  - Mouse + Touch support
+
+NOTE:
+Local visual effects only.
+Max distance filters replicated vehicles.
+Does not override Roblox streaming.
+========================================================
 ]]
 
---==================================================
--- SERVICES / REMOTES
---==================================================
+--========================================================
+-- SERVICES
+--========================================================
 
 local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local UserInputService = game:GetService("UserInputService")
-local HttpService = game:GetService("HttpService")
-local VirtualUser = game:GetService("VirtualUser")
+local UIS = game:GetService("UserInputService")
 
 local Player = Players.LocalPlayer
 local PlayerGui = Player:WaitForChild("PlayerGui")
-local HushNet = ReplicatedStorage:WaitForChild("HushNet")
-local MenuGet = HushNet:WaitForChild("menu.get")
-local MenuOp = HushNet:WaitForChild("menu.op")
 
---==================================================
--- CONFIG / STATE
---==================================================
+--========================================================
+-- CLEANUP PREVIOUS VERSION
+--========================================================
 
-local CONFIG = {
-    ScanInterval = 1,
-    RequestDelay = 1,
-    AutoBuyCooldown = 1,
-    NPCTriggerDelay = 3,
-    NPCRequestDelay = 0.3,
-    GridRefreshInterval = 2,
-    SaveFile = "HushControlCenter_v1.json",
-}
-
-local COLORS = {
-    bg = Color3.fromRGB(12, 15, 23),
-    panel = Color3.fromRGB(20, 25, 37),
-    panel2 = Color3.fromRGB(28, 35, 50),
-    panel3 = Color3.fromRGB(36, 44, 62),
-    border = Color3.fromRGB(53, 64, 86),
-    text = Color3.fromRGB(235, 240, 250),
-    muted = Color3.fromRGB(139, 152, 176),
-    accent = Color3.fromRGB(111, 99, 255),
-    green = Color3.fromRGB(56, 196, 129),
-    red = Color3.fromRGB(226, 78, 91),
-    orange = Color3.fromRGB(238, 171, 73),
-    blue = Color3.fromRGB(75, 164, 235),
-}
-
-local defaultWatchlist = {
-    {id="rifle_dm308_gold", name="DM-308 Gold", maxPrice=10000000, enabled=true, autoBuy=false},
-    {id="mg_gm30_gold", name="GM-30 Gold", maxPrice=20000000, enabled=true, autoBuy=false},
-    {id="mg_rv1_gold", name="RV-1 Gold", maxPrice=23000000, enabled=true, autoBuy=false},
-    {id="att_scope_8x", name="8x Scope", maxPrice=2000000, enabled=true, autoBuy=false},
-    {id="rifle_tr9_gold", name="TR-9 Gold", maxPrice=14000000, enabled=true, autoBuy=false},
-    {id="rifle_sc7_gold", name="SC-7 Gold", maxPrice=2000000, enabled=true, autoBuy=false},
-    {id="helmet_nvg_quad", name="Quad NVG", maxPrice=23000000, enabled=true, autoBuy=false},
-}
-
-local ammoList = {
-    -- 12GA
-    {offer="12ga_1", count=3, req=3},
-    {offer="12ga_1_l3", count=1, req=4},
-    {offer="12ga_1_l5", count=3, req=5},
-    {offer="12ga_4_l5", count=2, req=6},
-    {offer="12ga_4", count=1, req=7},
-    -- .308
-    {offer="308_l3", count=2, req=1},
-    {offer="308_1_l2", count=2, req=2},
-    {offer="308_1", count=2, req=3},
-    {offer="308_3", count=1, req=4},
-    {offer="308_3_l5", count=2, req=5},
-    {offer="308_1_l5", count=3, req=6},
-}
-
-local Watchlist, Results = {}, {}
-local DiscoveredIDs, DiscoveredSet = {}, {}
-local ActivityLog, PurchaseRecords = {}, {}
-local Monitoring, Scanning, GridScanning = false, false, false
-local NPCMonitoring, NPCBuying, NPCWaitingReset = false, false, false
-local AntiAFKEnabled = false
-local ScanToken = 0
-local TotalScans = 0
-local TotalMarketRequests = 0
-local TotalNPCRequests = 0
-local TotalNPCCycles = 0
-local PurchaseTotalSpent, PurchaseTotalUnits = 0, 0
-local SeenPurchaseText = setmetatable({}, {__mode="k"})
-local PurchaseConnections = {}
-local AntiAFKConnection
-
---==================================================
--- PERSISTENCE
---==================================================
-
-local function cloneTable(source)
-    local out = {}
-    for k,v in pairs(source) do
-        out[k] = type(v) == "table" and cloneTable(v) or v
-    end
-    return out
+if _G.VezaStop then
+    pcall(_G.VezaStop)
 end
 
-local function loadState()
-    if type(isfile) ~= "function" or type(readfile) ~= "function" then return nil end
-    local ok, exists = pcall(isfile, CONFIG.SaveFile)
-    if not ok or not exists then return nil end
-    local readOK, raw = pcall(readfile, CONFIG.SaveFile)
-    if not readOK then return nil end
-    local decodeOK, data = pcall(function() return HttpService:JSONDecode(raw) end)
-    if decodeOK and type(data) == "table" then return data end
+local previous = PlayerGui:FindFirstChild("VezaGUI")
+if previous then
+    previous:Destroy()
+end
+
+--========================================================
+-- SETTINGS
+--========================================================
+
+local Settings = {
+    MaxDistance = 1000,
+    UnlimitedDistance = false,
+
+    ScanInterval = 1,
+    UpdateInterval = 0.15,
+    ZombieScanInterval = 0.75,
+}
+
+--========================================================
+-- PERSISTENT CONFIG + HUSH CAMERA ZOOM
+--========================================================
+
+local HttpService = game:GetService("HttpService")
+local CONFIG_FILE = "VEZA_GUI_settings.json"
+local VEHICLE_LISTS_FILE = "VEZA_GUI_vehicle_lists.json"
+
+-- Vehicle preference tables are independent from the general settings toggle.
+local favoriteVehicles = {}
+local ignoredVehicles = {}
+
+local zombieESPEnabled = true
+local vehicleESPEnabled = true
+local militaryMapEnabled = true
+local updateMilitaryToggle
+local updateVehicleToggle
+local updateZombieToggle
+
+local RememberSettings = true
+local ZoomEnabled = true
+local ZoomDistance = 300
+local SavedZoomOriginal = nil
+local CameraZoomController = nil
+
+local function canUseFileAPI()
+    return type(readfile) == "function"
+        and type(writefile) == "function"
+        and type(isfile) == "function"
+end
+
+local function ensureConfigFolder()
+    if type(isfolder) == "function"
+        and type(makefolder) == "function" then
+        pcall(function()
+            if not isfolder("VEZA_GUI") then
+                makefolder("VEZA_GUI")
+            end
+        end)
+    end
+end
+
+local function loadVehicleLists()
+    if not canUseFileAPI() then return end
+    local ok, raw = pcall(function()
+        if isfile(VEHICLE_LISTS_FILE) then return readfile(VEHICLE_LISTS_FILE) end
+        return nil
+    end)
+    if not ok or type(raw) ~= "string" or raw == "" then return end
+    local decodedOK, data = pcall(function() return HttpService:JSONDecode(raw) end)
+    if not decodedOK or type(data) ~= "table" then return end
+    if type(data.Favorites) == "table" then
+        for _, name in ipairs(data.Favorites) do
+            if type(name) == "string" then favoriteVehicles[name] = true end
+        end
+    end
+    if type(data.Ignored) == "table" then
+        for _, name in ipairs(data.Ignored) do
+            if type(name) == "string" then ignoredVehicles[name] = true end
+        end
+    end
+end
+
+local function saveVehicleLists()
+    if not canUseFileAPI() then return false end
+    ensureConfigFolder()
+    local favorites, ignored = {}, {}
+    for name in pairs(favoriteVehicles) do table.insert(favorites, name) end
+    for name in pairs(ignoredVehicles) do table.insert(ignored, name) end
+    table.sort(favorites)
+    table.sort(ignored)
+    local ok, encoded = pcall(function()
+        return HttpService:JSONEncode({Favorites = favorites, Ignored = ignored})
+    end)
+    if not ok then return false end
+    return pcall(function() writefile(VEHICLE_LISTS_FILE, encoded) end)
+end
+
+local function loadConfig()
+    if not canUseFileAPI() then
+        return
+    end
+
+    ensureConfigFolder()
+
+    local ok, raw = pcall(function()
+        if not isfile(CONFIG_FILE) then
+            return nil
+        end
+        return readfile(CONFIG_FILE)
+    end)
+
+    if not ok or type(raw) ~= "string" or raw == "" then
+        return
+    end
+
+    local decodedOK, data = pcall(function()
+        return HttpService:JSONDecode(raw)
+    end)
+
+    if not decodedOK or type(data) ~= "table" then
+        return
+    end
+
+    if type(data.RememberSettings) == "boolean" then
+        RememberSettings = data.RememberSettings
+    end
+
+    if not RememberSettings then
+        return
+    end
+
+    if type(data.MaxDistance) == "number" then
+        Settings.MaxDistance = math.clamp(
+            math.floor(data.MaxDistance), 100, 5000
+        )
+    end
+    if type(data.UnlimitedDistance) == "boolean" then
+        Settings.UnlimitedDistance = data.UnlimitedDistance
+    end
+    if type(data.ZombieESP) == "boolean" then
+        _G.VEZA_LoadZombieESP = data.ZombieESP
+    end
+    if type(data.VehicleESP) == "boolean" then
+        _G.VEZA_LoadVehicleESP = data.VehicleESP
+    end
+    if type(data.MilitaryMap) == "boolean" then
+        _G.VEZA_LoadMilitaryMap = data.MilitaryMap
+    end
+    if type(data.ZoomEnabled) == "boolean" then
+        ZoomEnabled = data.ZoomEnabled
+    end
+    if type(data.ZoomDistance) == "number" then
+        ZoomDistance = math.clamp(
+            math.floor(data.ZoomDistance), 1, 1000
+        )
+    end
+end
+
+local function saveConfig()
+    if not RememberSettings then
+        return false
+    end
+    if not canUseFileAPI() then
+        return false
+    end
+
+    ensureConfigFolder()
+
+    local data = {
+        RememberSettings = RememberSettings,
+        MaxDistance = Settings.MaxDistance,
+        UnlimitedDistance = Settings.UnlimitedDistance,
+        ZombieESP = zombieESPEnabled == true,
+        VehicleESP = vehicleESPEnabled == true,
+        MilitaryMap = militaryMapEnabled == true,
+        ZoomEnabled = ZoomEnabled,
+        ZoomDistance = ZoomDistance,
+    }
+
+    local ok, encoded = pcall(function()
+        return HttpService:JSONEncode(data)
+    end)
+    if not ok then
+        return false
+    end
+
+    local writeOK = pcall(function()
+        writefile(CONFIG_FILE, encoded)
+    end)
+    return writeOK
+end
+
+loadConfig()
+loadVehicleLists()
+
+local function getCameraController()
+    if CameraZoomController
+        and type(CameraZoomController.ZOOM_LEVELS) == "table" then
+        return CameraZoomController
+    end
+
+    local playerScripts = Player:FindFirstChild("PlayerScripts")
+    local hushClient = playerScripts
+        and playerScripts:FindFirstChild("HushClient")
+    local controllers = hushClient
+        and hushClient:FindFirstChild("Controllers")
+    local cameraModule = controllers
+        and controllers:FindFirstChild("Camera")
+
+    if not cameraModule then
+        return nil
+    end
+
+    local ok, result = pcall(require, cameraModule)
+    if ok and type(result) == "table"
+        and type(result.ZOOM_LEVELS) == "table" then
+        CameraZoomController = result
+        return result
+    end
+
     return nil
 end
 
-local SavedState = loadState()
-local savedById = {}
-if SavedState and type(SavedState.watchlist) == "table" then
-    for _, item in ipairs(SavedState.watchlist) do
-        if type(item) == "table" and type(item.id) == "string" then
-            savedById[item.id] = item
-        end
+local function applyCameraZoom()
+    if not ZoomEnabled then
+        return false
+    end
+
+    local controller = getCameraController()
+    local levels = controller and controller.ZOOM_LEVELS
+    if type(levels) ~= "table" or #levels == 0 then
+        return false
+    end
+
+    local finalLevel = levels[#levels]
+    if type(finalLevel) ~= "table"
+        or type(finalLevel.dist) ~= "number" then
+        return false
+    end
+
+    if SavedZoomOriginal == nil then
+        SavedZoomOriginal = finalLevel.dist
+    end
+
+    finalLevel.dist = ZoomDistance
+    return true
+end
+
+local function restoreCameraZoom()
+    local controller = getCameraController()
+    local levels = controller and controller.ZOOM_LEVELS
+    local finalLevel = type(levels) == "table" and levels[#levels]
+    if type(finalLevel) == "table"
+        and SavedZoomOriginal ~= nil then
+        finalLevel.dist = SavedZoomOriginal
     end
 end
 
-for _, base in ipairs(defaultWatchlist) do
-    local item = cloneTable(base)
-    local saved = savedById[item.id]
-    if saved then
-        item.name = tostring(saved.name or item.name)
-        item.maxPrice = tonumber(saved.maxPrice) or item.maxPrice
-        item.enabled = saved.enabled == true
-        item.autoBuy = saved.autoBuy == true
-        item.priority = saved.priority == true
+local running = true
+local selectedVehicle = nil
+
+local vehicles = {}
+local vehicleRows = {}
+local bosses = {}
+local bossRows = {}
+local selectedBoss = nil
+local compactMode = "Cars"
+local minimized = false
+local scanVehicles
+local zombieHighlights = {}
+local seenVehicleModels = {}
+local seenBossModels = {}
+
+local connections = {}
+
+--========================================================
+-- THEME
+--========================================================
+
+local Theme = {
+    Background = Color3.fromRGB(17, 19, 24),
+    Sidebar = Color3.fromRGB(14, 16, 20),
+    Surface = Color3.fromRGB(27, 30, 37),
+    SurfaceHover = Color3.fromRGB(36, 41, 50),
+    Selected = Color3.fromRGB(30, 65, 68),
+
+    Accent = Color3.fromRGB(40, 190, 153),
+    Text = Color3.fromRGB(242, 244, 247),
+    Muted = Color3.fromRGB(145, 152, 164),
+    Border = Color3.fromRGB(48, 52, 61),
+    Red = Color3.fromRGB(205, 75, 80),
+
+    ZombieFill = Color3.fromRGB(40, 255, 120),
+    ZombieOutline = Color3.fromRGB(0, 255, 90),
+}
+
+--========================================================
+-- UI HELPERS
+--========================================================
+
+local function create(class, props, parent)
+    local obj = Instance.new(class)
+
+    for key, value in pairs(props or {}) do
+        obj[key] = value
     end
-    table.insert(Watchlist, item)
-    savedById[item.id] = nil
-end
-for id, saved in pairs(savedById) do
-    -- Golden Katana was explicitly removed from the requested watchlist.
-    if id ~= "melee_katana_gold" then
-        table.insert(Watchlist, {
-            id=id, name=tostring(saved.name or id),
-            maxPrice=tonumber(saved.maxPrice) or 1,
-            enabled=saved.enabled == true,
-            autoBuy=saved.autoBuy == true,
-            priority=saved.priority == true,
-            lastBuyAttempt=0,
-        })
+
+    if parent then
+        obj.Parent = parent
     end
-end
 
--- Apply the explicitly requested prices even if an older save file has stale values.
-for _, item in ipairs(Watchlist) do
-    if item.id == "rifle_tr9_gold" then
-        item.maxPrice = 14000000
-    elseif item.id == "att_scope_8x" then
-        item.maxPrice = 2000000
-    end
-end
-
-if SavedState and type(SavedState.discoveredIDs) == "table" then
-    for _, id in ipairs(SavedState.discoveredIDs) do
-        if type(id) == "string" and id ~= "" and not DiscoveredSet[id] then
-            DiscoveredSet[id] = true
-            table.insert(DiscoveredIDs, id)
-        end
-    end
-end
-if SavedState and type(SavedState.purchases) == "table" then
-    PurchaseRecords = SavedState.purchases
-end
-if SavedState and type(SavedState.requestDelay) == "number" then
-    CONFIG.RequestDelay = math.clamp(SavedState.requestDelay, 0.1, 60)
-end
-
-local function saveState()
-    if type(writefile) ~= "function" then return false end
-    local state = {
-        watchlist={}, discoveredIDs=DiscoveredIDs,
-        purchases=PurchaseRecords, requestDelay=CONFIG.RequestDelay,
-        antiAFK=AntiAFKEnabled,
-    }
-    for _, item in ipairs(Watchlist) do
-        table.insert(state.watchlist, {
-            id=item.id, name=item.name, maxPrice=item.maxPrice,
-            enabled=item.enabled == true, autoBuy=item.autoBuy == true,
-            priority=item.priority == true,
-        })
-    end
-    local ok, raw = pcall(function() return HttpService:JSONEncode(state) end)
-    if not ok then return false end
-    return pcall(writefile, CONFIG.SaveFile, raw)
-end
-
---==================================================
--- UTILITIES
---==================================================
-
-local function formatNumber(value)
-    local s = tostring(math.floor(tonumber(value) or 0))
-    while true do
-        local replaced, count = s:gsub("^(-?%d+)(%d%d%d)", "%1,%2")
-        s = replaced
-        if count == 0 then break end
-    end
-    return s
-end
-
-local function safeClipboard(value)
-    local fn = setclipboard or toclipboard or (syn and syn.write_clipboard)
-    if not fn then return false end
-    return pcall(fn, value)
-end
-
-local function make(className, props, parent)
-    local obj = Instance.new(className)
-    for k,v in pairs(props or {}) do obj[k] = v end
-    obj.Parent = parent
     return obj
 end
 
-local function addCorner(obj, radius)
-    make("UICorner", {CornerRadius=UDim.new(0, radius or 8)}, obj)
+local function round(obj, radius)
+    create("UICorner", {
+        CornerRadius = UDim.new(0, radius or 6)
+    }, obj)
 end
 
-local function addStroke(obj, color, thickness)
-    make("UIStroke", {Color=color or COLORS.border, Thickness=thickness or 1}, obj)
+local function addStroke(obj)
+    create("UIStroke", {
+        Color = Theme.Border,
+        Thickness = 1,
+        Transparency = 0.35
+    }, obj)
 end
 
-local function label(parent, text, size, color, bold)
-    return make("TextLabel", {
-        BackgroundTransparency=1, Text=text or "",
-        TextColor3=color or COLORS.text, TextSize=size or 12,
-        Font=bold and Enum.Font.GothamBold or Enum.Font.Gotham,
-        TextXAlignment=Enum.TextXAlignment.Left,
-        TextYAlignment=Enum.TextYAlignment.Center,
-        Size=UDim2.new(1,0,0,22),
+local function text(parent, value, size, color, bold)
+    return create("TextLabel", {
+        BackgroundTransparency = 1,
+        Text = value,
+        TextColor3 = color or Theme.Text,
+        Font = bold and Enum.Font.GothamBold
+            or Enum.Font.Gotham,
+        TextSize = size or 12,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Center,
+        TextTruncate = Enum.TextTruncate.AtEnd
     }, parent)
 end
 
-local function button(parent, text, callback, color, width, height)
-    local b = make("TextButton", {
-        BackgroundColor3=color or COLORS.panel2, Text=text,
-        TextColor3=COLORS.text, TextSize=11,
-        Font=Enum.Font.GothamBold, AutoButtonColor=true,
-        Size=UDim2.fromOffset(width or 100, height or 30),
+local function button(parent, value, color)
+    local obj = create("TextButton", {
+        BackgroundColor3 = color or Theme.Surface,
+        BorderSizePixel = 0,
+        Text = value,
+        TextColor3 = Theme.Text,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 12,
+        AutoButtonColor = true
     }, parent)
-    addCorner(b, 7)
-    addStroke(b)
-    b.Activated:Connect(callback)
-    return b
+
+    round(obj, 6)
+    return obj
 end
 
-local function textbox(parent, placeholder, width)
-    local t = make("TextBox", {
-        BackgroundColor3=COLORS.panel2, Text="",
-        PlaceholderText=placeholder, PlaceholderColor3=COLORS.muted,
-        TextColor3=COLORS.text, TextSize=11, Font=Enum.Font.Gotham,
-        ClearTextOnFocus=false, TextEditable=true, Active=true,
-        Size=UDim2.fromOffset(width, 32),
-    }, parent)
-    addCorner(t, 7)
-    addStroke(t)
-    return t
+local function track(conn)
+    table.insert(connections, conn)
+    return conn
 end
 
-local function addLog(message, category)
-    local entry = string.format("[%s] [%s] %s", os.date("%H:%M:%S"), category or "INFO", tostring(message))
-    table.insert(ActivityLog, 1, entry)
-    while #ActivityLog > 150 do table.remove(ActivityLog) end
-    print("[HUSH CONTROL] " .. entry)
-    if LogList then
-        for _, child in ipairs(LogList:GetChildren()) do
-            if child:IsA("TextLabel") then child:Destroy() end
-        end
-        for i, line in ipairs(ActivityLog) do
-            local row = label(LogList, line, 10, COLORS.muted, false)
-            row.Size = UDim2.new(1,-8,0,18)
-            row.LayoutOrder = i
-        end
+--========================================================
+-- GUI ROOT
+--========================================================
+
+local gui = create("ScreenGui", {
+    Name = "VezaGUI",
+    ResetOnSpawn = false,
+    DisplayOrder = 999,
+    IgnoreGuiInset = true,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+}, PlayerGui)
+
+local main = create("Frame", {
+    Name = "Main",
+    Size = UDim2.new(0, 580, 0, 390),
+    Position = UDim2.new(0.5, -290, 0.5, -195),
+    BackgroundColor3 = Theme.Background,
+    BackgroundTransparency = 0.16,
+    BorderSizePixel = 0,
+    ClipsDescendants = true
+}, gui)
+
+round(main, 12)
+addStroke(main)
+
+-- RESPONSIVE SCALE
+local scale = create("UIScale", {
+    Scale = 1
+}, main)
+
+local function updateScale()
+    local camera = workspace.CurrentCamera
+    if not camera then return end
+
+    local viewport = camera.ViewportSize
+
+    local sx = (viewport.X - 20) / 580
+    local sy = (viewport.Y - 20) / 390
+
+    scale.Scale = math.clamp(
+        math.min(sx, sy, 1),
+        0.45,
+        1
+    )
+end
+
+updateScale()
+
+--========================================================
+-- HEADER
+--========================================================
+
+local header = create("Frame", {
+    Size = UDim2.new(1, 0, 0, 46),
+    BackgroundColor3 = Theme.Background,
+    BackgroundTransparency = 0.14,
+    BorderSizePixel = 0
+}, main)
+
+local logo = text(
+    header, "VEZA", 19, Theme.Accent, true
+)
+logo.Position = UDim2.new(0, 17, 0, 7)
+logo.Size = UDim2.new(0, 60, 0, 30)
+
+local version = text(
+    header, "v2.7", 10, Theme.Muted
+)
+version.Position = UDim2.new(0, 80, 0, 10)
+version.Size = UDim2.new(0, 45, 0, 25)
+
+local minimize = button(header, "—")
+minimize.Position = UDim2.new(1, -76, 0, 9)
+minimize.Size = UDim2.new(0, 29, 0, 28)
+
+local close = button(header, "X", Theme.Red)
+close.Position = UDim2.new(1, -40, 0, 9)
+close.Size = UDim2.new(0, 29, 0, 28)
+
+create("Frame", {
+    Size = UDim2.new(1, 0, 0, 1),
+    Position = UDim2.new(0, 0, 1, -1),
+    BackgroundColor3 = Theme.Border,
+    BorderSizePixel = 0
+}, header)
+
+--========================================================
+-- DRAG WINDOW
+--========================================================
+
+local dragging = false
+local dragStart
+local startPos
+local dragInput
+
+track(header.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+    or input.UserInputType == Enum.UserInputType.Touch then
+
+        dragging = true
+        dragStart = input.Position
+        startPos = main.Position
+        dragInput = input
+    end
+end))
+
+track(UIS.InputChanged:Connect(function(input)
+    if not dragging then return end
+
+    local valid =
+        input == dragInput
+        or (
+            dragInput
+            and dragInput.UserInputType
+                == Enum.UserInputType.MouseButton1
+            and input.UserInputType
+                == Enum.UserInputType.MouseMovement
+        )
+
+    if not valid then return end
+
+    local delta = input.Position - dragStart
+    local s = scale.Scale
+
+    main.Position = UDim2.new(
+        startPos.X.Scale,
+        startPos.X.Offset + delta.X / s,
+        startPos.Y.Scale,
+        startPos.Y.Offset + delta.Y / s
+    )
+end))
+
+track(UIS.InputEnded:Connect(function(input)
+    if input == dragInput
+    or input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = false
+        dragInput = nil
+    end
+end))
+
+--========================================================
+-- BODY
+--========================================================
+
+local body = create("Frame", {
+    Size = UDim2.new(1, 0, 1, -46),
+    Position = UDim2.new(0, 0, 0, 46),
+    BackgroundTransparency = 1
+}, main)
+
+-- SIDEBAR
+local sidebar = create("Frame", {
+    Size = UDim2.new(0, 155, 1, 0),
+    BackgroundColor3 = Theme.Sidebar,
+    BackgroundTransparency = 0.14,
+    BorderSizePixel = 0
+}, body)
+
+local sidebarTitle = text(
+    sidebar, "FEATURES", 10, Theme.Muted, true
+)
+sidebarTitle.Position = UDim2.new(0, 14, 0, 14)
+sidebarTitle.Size = UDim2.new(1, -25, 0, 20)
+
+local navContainer = create("Frame", {
+    Size = UDim2.new(1, -16, 0, 230),
+    Position = UDim2.new(0, 8, 0, 42),
+    BackgroundTransparency = 1
+}, sidebar)
+
+create("UIListLayout", {
+    Padding = UDim.new(0, 6),
+    SortOrder = Enum.SortOrder.LayoutOrder
+}, navContainer)
+
+local footer = text(
+    sidebar, "VEZA  •  Modular GUI", 10, Theme.Muted
+)
+footer.Position = UDim2.new(0, 13, 1, -30)
+footer.Size = UDim2.new(1, -20, 0, 20)
+
+-- CONTENT
+local content = create("Frame", {
+    Size = UDim2.new(1, -155, 1, 0),
+    Position = UDim2.new(0, 155, 0, 0),
+    BackgroundTransparency = 1
+}, body)
+
+local pages = {}
+local navButtons = {}
+
+local function showPage(name)
+    for pageName, page in pairs(pages) do
+        page.Visible = pageName == name
+    end
+
+    for pageName, nav in pairs(navButtons) do
+        nav.BackgroundColor3 =
+            pageName == name
+            and Theme.Selected
+            or Theme.Sidebar
+
+        nav.TextColor3 =
+            pageName == name
+            and Theme.Accent
+            or Theme.Muted
     end
 end
 
-local function findWatchItem(id)
-    for i, item in ipairs(Watchlist) do
-        if item.id == id then return item, i end
+local function registerPage(name, navName, order)
+    local nav = button(navContainer, navName, Theme.Sidebar)
+    nav.Size = UDim2.new(1, 0, 0, 36)
+    nav.LayoutOrder = order
+    nav.TextXAlignment = Enum.TextXAlignment.Left
+    nav.TextSize = 11
+
+    create("UIPadding", {
+        PaddingLeft = UDim.new(0, 12)
+    }, nav)
+
+    local page = create("Frame", {
+        Name = name,
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1,
+        Visible = false
+    }, content)
+
+    pages[name] = page
+    navButtons[name] = nav
+
+    nav.MouseButton1Click:Connect(function()
+        showPage(name)
+    end)
+
+    return page
+end
+
+--========================================================
+-- PAGE 1: VEHICLE TRACKER
+--========================================================
+
+-- Top-center detection notifications. Each alert has its own close button.
+local notificationLayer = create("Frame", {
+    Name = "VEZA_NotificationLayer",
+    AnchorPoint = Vector2.new(0.5, 0),
+    Position = UDim2.new(0.5, 0, 0, 10),
+    Size = UDim2.new(0, 360, 0, 150),
+    BackgroundTransparency = 1,
+    ZIndex = 100
+}, screenGui)
+local notificationLayout = create("UIListLayout", {
+    Padding = UDim.new(0, 6),
+    SortOrder = Enum.SortOrder.LayoutOrder,
+    HorizontalAlignment = Enum.HorizontalAlignment.Center
+}, notificationLayer)
+local notificationSerial = 0
+
+local function showDetectionNotification(kind, itemName)
+    notificationSerial += 1
+    local card = create("Frame", {
+        Name = "DetectionAlert",
+        Size = UDim2.new(1, 0, 0, 42),
+        BackgroundColor3 = Theme.Background,
+        BackgroundTransparency = 0.05,
+        BorderSizePixel = 0,
+        ZIndex = 101,
+        LayoutOrder = notificationSerial
+    }, notificationLayer)
+    create("UICorner", {CornerRadius = UDim.new(0, 7)}, card)
+    create("UIStroke", {Color = Theme.Accent, Transparency = 0.35, Thickness = 1}, card)
+
+    local message = text(card, kind .. " detected: " .. itemName, 11, Theme.Text, true)
+    message.Position = UDim2.new(0, 12, 0, 0)
+    message.Size = UDim2.new(1, -48, 1, 0)
+    message.TextXAlignment = Enum.TextXAlignment.Left
+    message.ZIndex = 102
+
+    local closeAlert = button(card, "×", Theme.Border)
+    closeAlert.Position = UDim2.new(1, -34, 0, 7)
+    closeAlert.Size = UDim2.new(0, 26, 0, 28)
+    closeAlert.ZIndex = 103
+    closeAlert.MouseButton1Click:Connect(function()
+        card:Destroy()
+    end)
+end
+
+local trackerPage = registerPage(
+    "Tracker", "Vehicle Tracker", 1
+)
+
+local trackerTitle = text(
+    trackerPage, "Vehicle Tracker", 16, Theme.Text, true
+)
+trackerTitle.Position = UDim2.new(0, 16, 0, 12)
+trackerTitle.Size = UDim2.new(1, -32, 0, 25)
+
+local trackerSubtitle = text(
+    trackerPage,
+    "Live vehicle positions and directions",
+    10, Theme.Muted
+)
+trackerSubtitle.Position = UDim2.new(0, 16, 0, 37)
+trackerSubtitle.Size = UDim2.new(1, -32, 0, 18)
+
+local liveStatus = text(
+    trackerPage, "● LIVE", 10, Theme.Accent, true
+)
+liveStatus.Position = UDim2.new(0, 16, 0, 60)
+liveStatus.Size = UDim2.new(0, 120, 0, 22)
+
+local vehicleCount = text(
+    trackerPage, "0 vehicles", 10, Theme.Muted
+)
+vehicleCount.Position = UDim2.new(1, -145, 0, 60)
+vehicleCount.Size = UDim2.new(0, 125, 0, 22)
+vehicleCount.TextXAlignment = Enum.TextXAlignment.Right
+
+-- TARGET PANEL
+local targetPanel = create("Frame", {
+    Size = UDim2.new(1, -32, 0, 75),
+    Position = UDim2.new(0, 16, 0, 88),
+    BackgroundColor3 = Theme.Surface,
+    BackgroundTransparency = 0.16,
+    BorderSizePixel = 0
+}, trackerPage)
+round(targetPanel, 7)
+
+local targetTitle = text(
+    targetPanel, "SELECTED TARGET", 9, Theme.Muted, true
+)
+targetTitle.Position = UDim2.new(0, 10, 0, 6)
+targetTitle.Size = UDim2.new(1, -20, 0, 16)
+
+local targetName = text(
+    targetPanel, "No vehicle selected", 13, Theme.Text, true
+)
+targetName.Position = UDim2.new(0, 10, 0, 25)
+targetName.Size = UDim2.new(1, -20, 0, 20)
+
+local targetDistance = text(
+    targetPanel, "Tap a vehicle to track",
+    11, Theme.Accent, true
+)
+targetDistance.Position = UDim2.new(0, 10, 0, 48)
+targetDistance.Size = UDim2.new(1, -20, 0, 20)
+
+local listTitle = text(
+    trackerPage, "DETECTED VEHICLES", 10, Theme.Muted, true
+)
+listTitle.Position = UDim2.new(0, 16, 0, 171)
+listTitle.Size = UDim2.new(1, -150, 0, 24)
+
+-- Selected vehicle tracking line (screen-space tracer)
+local targetTracer = create("Frame", {
+    Name = "VEZA_SelectedVehicleLine",
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromOffset(0, 0),
+    Size = UDim2.fromOffset(0, 3),
+    BackgroundColor3 = Color3.fromRGB(255, 220, 40),
+    BorderSizePixel = 0,
+    Visible = false,
+    ZIndex = 50
+}, gui)
+round(targetTracer, 3)
+
+local targetTracerDot = create("Frame", {
+    Name = "VEZA_SelectedVehicleDot",
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Size = UDim2.fromOffset(9, 9),
+    BackgroundColor3 = Color3.fromRGB(255, 235, 90),
+    BorderSizePixel = 0,
+    Visible = false,
+    ZIndex = 51
+}, gui)
+round(targetTracerDot, 9)
+
+-- Compact waypoint label for the currently selected vehicle.
+local vehicleWaypoint = create("Frame", {
+    Name = "VEZA_VehicleWaypoint",
+    AnchorPoint = Vector2.new(0.5, 1),
+    Size = UDim2.fromOffset(190, 28),
+    BackgroundColor3 = Color3.fromRGB(10, 18, 24),
+    BackgroundTransparency = 0.18,
+    BorderSizePixel = 0,
+    Visible = false,
+    ZIndex = 60
+}, gui)
+local waypointStroke = create("UIStroke", {
+    Color = Color3.fromRGB(255, 220, 40),
+    Thickness = 1,
+    Transparency = 0.05
+}, vehicleWaypoint)
+round(vehicleWaypoint, 2)
+
+local waypointText = text(
+    vehicleWaypoint, "VEHICLE  •  -- studs",
+    11, Color3.fromRGB(255, 235, 120), true
+)
+waypointText.Position = UDim2.fromOffset(7, 0)
+waypointText.Size = UDim2.new(1, -14, 1, 0)
+waypointText.TextXAlignment = Enum.TextXAlignment.Center
+waypointText.ZIndex = 61
+
+local vehicleESPToggle = button(
+    trackerPage, "CAR ESP: OFF", Theme.Border
+)
+vehicleESPToggle.Position = UDim2.new(1, -126, 0, 166)
+vehicleESPToggle.Size = UDim2.new(0, 110, 0, 27)
+
+local vehicleList = create("ScrollingFrame", {
+    Size = UDim2.new(1, -32, 1, -204),
+    Position = UDim2.new(0, 16, 0, 196),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 3,
+    ScrollBarImageColor3 = Theme.Accent,
+    CanvasSize = UDim2.new(0, 0, 0, 0),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y
+}, trackerPage)
+
+create("UIListLayout", {
+    Padding = UDim.new(0, 6),
+    SortOrder = Enum.SortOrder.LayoutOrder
+}, vehicleList)
+
+-- Compact-mode selector and dedicated boss list.
+local compactTabs = create("Frame", {
+    Name = "VEZA_CompactTabs",
+    Size = UDim2.new(1, -20, 0, 28),
+    Position = UDim2.new(0, 10, 0, 5),
+    BackgroundTransparency = 1,
+    Visible = false
+}, trackerPage)
+local compactCarTab = button(compactTabs, "CARS", Theme.Accent)
+compactCarTab.Position = UDim2.new(0, 0, 0, 0)
+compactCarTab.Size = UDim2.new(0.5, -3, 1, 0)
+local compactBossTab = button(compactTabs, "BOSSES", Theme.Border)
+compactBossTab.Position = UDim2.new(0.5, 3, 0, 0)
+compactBossTab.Size = UDim2.new(0.5, -3, 1, 0)
+
+local bossCount = text(trackerPage, "0 bosses", 10, Theme.Muted, true)
+bossCount.Position = UDim2.new(0, 12, 0, 10)
+bossCount.Size = UDim2.new(1, -24, 0, 20)
+bossCount.Visible = false
+
+local bossList = create("ScrollingFrame", {
+    Name = "VEZA_BossList",
+    Size = UDim2.new(1, -20, 1, -46),
+    Position = UDim2.new(0, 10, 0, 36),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 3,
+    ScrollBarImageColor3 = Theme.Accent,
+    CanvasSize = UDim2.new(0, 0, 0, 0),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    Visible = false
+}, trackerPage)
+create("UIListLayout", {
+    Padding = UDim.new(0, 6),
+    SortOrder = Enum.SortOrder.LayoutOrder
+}, bossList)
+
+-- Unified minimized results: cars and bosses share one scrollable list.
+local compactCombinedList = create("ScrollingFrame", {
+    Name = "VEZA_CompactCombinedList",
+    Size = UDim2.new(1, -20, 1, -70),
+    Position = UDim2.new(0, 10, 0, 60),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 3,
+    ScrollBarImageColor3 = Theme.Accent,
+    CanvasSize = UDim2.new(0, 0, 0, 0),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    Visible = false
+}, trackerPage)
+create("UIListLayout", {
+    Padding = UDim.new(0, 6),
+    SortOrder = Enum.SortOrder.LayoutOrder
+}, compactCombinedList)
+local compactCount = text(trackerPage, "0 cars • 0 bosses", 10, Theme.Muted, true)
+compactCount.Position = UDim2.new(0, 12, 0, 36)
+compactCount.Size = UDim2.new(1, -24, 0, 20)
+compactCount.TextXAlignment = Enum.TextXAlignment.Left
+compactCount.Visible = false
+
+-- Wide compact layout: BOSSES on the left, CARS on the right.
+local compactBossTitle = text(trackerPage, "BOSSES", 9, Theme.Muted, true)
+compactBossTitle.Visible = false
+local compactCarTitle = text(trackerPage, "CARS", 9, Theme.Muted, true)
+compactCarTitle.Visible = false
+
+local compactBossColumn = create("ScrollingFrame", {
+    Name = "VEZA_CompactBossColumn",
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 3,
+    ScrollBarImageColor3 = Theme.Accent,
+    CanvasSize = UDim2.new(0, 0, 0, 0),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    Visible = false
+}, trackerPage)
+create("UIListLayout", {
+    Padding = UDim.new(0, 4),
+    SortOrder = Enum.SortOrder.LayoutOrder
+}, compactBossColumn)
+
+local compactCarColumn = create("ScrollingFrame", {
+    Name = "VEZA_CompactCarColumn",
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 3,
+    ScrollBarImageColor3 = Theme.Accent,
+    CanvasSize = UDim2.new(0, 0, 0, 0),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    Visible = false
+}, trackerPage)
+create("UIListLayout", {
+    Padding = UDim.new(0, 4),
+    SortOrder = Enum.SortOrder.LayoutOrder
+}, compactCarColumn)
+
+local function updateCompactModeButtons()
+    compactCarTab.BackgroundColor3 = compactMode == "Cars" and Theme.Accent or Theme.Border
+    compactBossTab.BackgroundColor3 = compactMode == "Bosses" and Theme.Accent or Theme.Border
+    vehicleList.Visible = compactMode == "Cars"
+    bossList.Visible = compactMode == "Bosses"
+    vehicleCount.Visible = compactMode == "Cars"
+    bossCount.Visible = compactMode == "Bosses"
+end
+compactCarTab.MouseButton1Click:Connect(function()
+    compactMode = "Cars"
+    updateCompactModeButtons()
+end)
+compactBossTab.MouseButton1Click:Connect(function()
+    compactMode = "Bosses"
+    updateCompactModeButtons()
+end)
+
+--========================================================
+-- PAGE 2: DISTANCE SETTINGS
+--========================================================
+
+local settingsPage = registerPage(
+    "Distance", "Distance Settings", 2
+)
+
+local settingsTitle = text(
+    settingsPage, "Distance Settings", 16, Theme.Text, true
+)
+settingsTitle.Position = UDim2.new(0, 16, 0, 12)
+settingsTitle.Size = UDim2.new(1, -32, 0, 25)
+
+local settingsSubtitle = text(
+    settingsPage,
+    "Configure vehicle detection radius",
+    10, Theme.Muted
+)
+settingsSubtitle.Position = UDim2.new(0, 16, 0, 37)
+settingsSubtitle.Size = UDim2.new(1, -32, 0, 20)
+
+local distancePanel = create("Frame", {
+    Size = UDim2.new(1, -32, 0, 115),
+    Position = UDim2.new(0, 16, 0, 70),
+    BackgroundColor3 = Theme.Surface,
+    BorderSizePixel = 0
+}, settingsPage)
+round(distancePanel, 7)
+
+local distanceTitle = text(
+    distancePanel, "Maximum Scan Distance",
+    12, Theme.Text, true
+)
+distanceTitle.Position = UDim2.new(0, 12, 0, 10)
+distanceTitle.Size = UDim2.new(1, -24, 0, 20)
+
+local distanceValue = text(
+    distancePanel, "1000 studs",
+    11, Theme.Accent, true
+)
+distanceValue.Position = UDim2.new(0, 12, 0, 34)
+distanceValue.Size = UDim2.new(1, -24, 0, 20)
+
+local sliderBar = create("Frame", {
+    Size = UDim2.new(1, -30, 0, 6),
+    Position = UDim2.new(0, 15, 0, 77),
+    BackgroundColor3 = Theme.Border,
+    BorderSizePixel = 0
+}, distancePanel)
+round(sliderBar, 6)
+
+local sliderFill = create("Frame", {
+    Size = UDim2.new(0, 0, 1, 0),
+    BackgroundColor3 = Theme.Accent,
+    BorderSizePixel = 0
+}, sliderBar)
+round(sliderFill, 6)
+
+local sliderKnob = create("Frame", {
+    Size = UDim2.new(0, 15, 0, 15),
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.new(0, 0, 0.5, 0),
+    BackgroundColor3 = Theme.Text,
+    BorderSizePixel = 0
+}, sliderBar)
+round(sliderKnob, 10)
+
+local MIN_DISTANCE = 100
+local MAX_DISTANCE = 5000
+
+local function updateSlider()
+    local percent = (
+        Settings.MaxDistance - MIN_DISTANCE
+    ) / (MAX_DISTANCE - MIN_DISTANCE)
+
+    sliderFill.Size = UDim2.new(percent, 0, 1, 0)
+    sliderKnob.Position = UDim2.new(percent, 0, 0.5, 0)
+
+    distanceValue.Text =
+        Settings.UnlimitedDistance
+        and "Unlimited"
+        or (Settings.MaxDistance .. " studs")
+end
+
+local draggingSlider = false
+
+local function setSliderFromX(x)
+    if Settings.UnlimitedDistance then return end
+
+    local startX = sliderBar.AbsolutePosition.X
+    local width = sliderBar.AbsoluteSize.X
+
+    if width <= 0 then return end
+
+    local percent = math.clamp(
+        (x - startX) / width, 0, 1
+    )
+
+    local value = MIN_DISTANCE
+        + percent * (MAX_DISTANCE - MIN_DISTANCE)
+
+    Settings.MaxDistance = math.clamp(
+        math.floor(value / 50 + 0.5) * 50,
+        MIN_DISTANCE,
+        MAX_DISTANCE
+    )
+
+    updateSlider()
+end
+
+track(sliderBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+    or input.UserInputType == Enum.UserInputType.Touch then
+
+        draggingSlider = true
+        setSliderFromX(input.Position.X)
+    end
+end))
+
+track(UIS.InputChanged:Connect(function(input)
+    if draggingSlider and (
+        input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch
+    ) then
+        setSliderFromX(input.Position.X)
+    end
+end))
+
+track(UIS.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+    or input.UserInputType == Enum.UserInputType.Touch then
+        draggingSlider = false
+    end
+end))
+
+-- UNLIMITED TOGGLE
+local unlimitedPanel = create("Frame", {
+    Size = UDim2.new(1, -32, 0, 52),
+    Position = UDim2.new(0, 16, 0, 196),
+    BackgroundColor3 = Theme.Surface,
+    BorderSizePixel = 0
+}, settingsPage)
+round(unlimitedPanel, 7)
+
+local unlimitedLabel = text(
+    unlimitedPanel, "Unlimited Scan Distance",
+    11, Theme.Text, true
+)
+unlimitedLabel.Position = UDim2.new(0, 12, 0, 10)
+unlimitedLabel.Size = UDim2.new(1, -95, 0, 30)
+
+local unlimitedButton = button(
+    unlimitedPanel, "OFF", Theme.Border
+)
+unlimitedButton.Position = UDim2.new(1, -66, 0, 12)
+unlimitedButton.Size = UDim2.new(0, 54, 0, 28)
+
+local function updateUnlimited()
+    unlimitedButton.Text =
+        Settings.UnlimitedDistance and "ON" or "OFF"
+
+    unlimitedButton.BackgroundColor3 =
+        Settings.UnlimitedDistance
+        and Theme.Accent
+        or Theme.Border
+
+    updateSlider()
+end
+
+unlimitedButton.MouseButton1Click:Connect(function()
+    Settings.UnlimitedDistance =
+        not Settings.UnlimitedDistance
+
+    updateUnlimited()
+    saveConfig()
+end)
+
+local note = text(
+    settingsPage,
+    "Only vehicles replicated to your client can be detected.",
+    10, Theme.Muted
+)
+note.Position = UDim2.new(0, 16, 0, 263)
+note.Size = UDim2.new(1, -32, 0, 35)
+note.TextWrapped = true
+
+--========================================================
+-- PAGE 3: PREFERENCES + REMEMBER SETTINGS
+--========================================================
+
+local preferencesPage = registerPage(
+    "Preferences", "Preferences", 3
+)
+
+local preferencesTitle = text(
+    preferencesPage, "Preferences", 16, Theme.Text, true
+)
+preferencesTitle.Position = UDim2.new(0, 16, 0, 12)
+preferencesTitle.Size = UDim2.new(1, -32, 0, 25)
+
+local preferencesSubtitle = text(
+    preferencesPage,
+    "Save settings and configure Hush camera zoom",
+    10, Theme.Muted
+)
+preferencesSubtitle.Position = UDim2.new(0, 16, 0, 37)
+preferencesSubtitle.Size = UDim2.new(1, -32, 0, 20)
+
+local rememberPanel = create("Frame", {
+    Size = UDim2.new(1, -32, 0, 55),
+    Position = UDim2.new(0, 16, 0, 70),
+    BackgroundColor3 = Theme.Surface,
+    BorderSizePixel = 0
+}, preferencesPage)
+round(rememberPanel, 7)
+
+local rememberLabel = text(
+    rememberPanel, "Remember Settings", 12, Theme.Text, true
+)
+rememberLabel.Position = UDim2.new(0, 12, 0, 7)
+rememberLabel.Size = UDim2.new(1, -105, 0, 20)
+
+local rememberHint = text(
+    rememberPanel, "Restore options next time you execute", 9, Theme.Muted
+)
+rememberHint.Position = UDim2.new(0, 12, 0, 29)
+rememberHint.Size = UDim2.new(1, -105, 0, 16)
+
+local rememberButton = button(
+    rememberPanel, RememberSettings and "ON" or "OFF",
+    RememberSettings and Theme.Accent or Theme.Border
+)
+rememberButton.Position = UDim2.new(1, -66, 0, 13)
+rememberButton.Size = UDim2.new(0, 54, 0, 29)
+
+local zoomPanel = create("Frame", {
+    Size = UDim2.new(1, -32, 0, 116),
+    Position = UDim2.new(0, 16, 0, 137),
+    BackgroundColor3 = Theme.Surface,
+    BorderSizePixel = 0
+}, preferencesPage)
+round(zoomPanel, 7)
+
+local zoomTitle = text(
+    zoomPanel, "Hush Unlimited Camera Zoom", 12, Theme.Text, true
+)
+zoomTitle.Position = UDim2.new(0, 12, 0, 8)
+zoomTitle.Size = UDim2.new(1, -24, 0, 20)
+
+local zoomHint = text(
+    zoomPanel, "Distance in studs (1–1000)", 9, Theme.Muted
+)
+zoomHint.Position = UDim2.new(0, 12, 0, 31)
+zoomHint.Size = UDim2.new(1, -24, 0, 16)
+
+local zoomInput = create("TextBox", {
+    Size = UDim2.new(0, 95, 0, 30),
+    Position = UDim2.new(0, 12, 0, 61),
+    BackgroundColor3 = Theme.Background,
+    BorderSizePixel = 0,
+    Text = tostring(ZoomDistance),
+    PlaceholderText = "300",
+    TextColor3 = Theme.Text,
+    PlaceholderColor3 = Theme.Muted,
+    Font = Enum.Font.Gotham,
+    TextSize = 12,
+    ClearTextOnFocus = false
+}, zoomPanel)
+round(zoomInput, 5)
+
+local zoomToggle = button(
+    zoomPanel, ZoomEnabled and "ZOOM: ON" or "ZOOM: OFF",
+    ZoomEnabled and Theme.Accent or Theme.Border
+)
+zoomToggle.Position = UDim2.new(1, -112, 0, 61)
+zoomToggle.Size = UDim2.new(0, 100, 0, 30)
+
+local saveButton = button(
+    preferencesPage, "SAVE SETTINGS NOW", Theme.Accent
+)
+saveButton.Position = UDim2.new(0, 16, 0, 267)
+saveButton.Size = UDim2.new(0.5, -22, 0, 34)
+
+local resetButton = button(
+    preferencesPage, "RESET DEFAULTS", Theme.Border
+)
+resetButton.Position = UDim2.new(0.5, 6, 0, 267)
+resetButton.Size = UDim2.new(0.5, -22, 0, 34)
+
+local resetVehicleListsButton = button(preferencesPage, "RESET CAR FAVORITES / IGNORE", Theme.Border)
+resetVehicleListsButton.Position = UDim2.new(0, 16, 0, 307)
+resetVehicleListsButton.Size = UDim2.new(1, -32, 0, 30)
+local preferenceStatus = text(
+    preferencesPage, "Status: waiting", 9, Theme.Muted
+)
+preferenceStatus.Position = UDim2.new(0, 16, 0, 337)
+preferenceStatus.Size = UDim2.new(1, -32, 0, 20)
+
+local refreshIgnoreList
+
+resetVehicleListsButton.MouseButton1Click:Connect(function()
+    favoriteVehicles = {}
+    ignoredVehicles = {}
+    saveVehicleLists()
+    if scanVehicles then scanVehicles() end
+    preferenceStatus.Text = "Status: car list restored to normal"
+    refreshIgnoreList()
+end)
+
+-- Dedicated Ignore List page so ignored vehicle types can be restored anytime.
+local ignoreListPage = registerPage("Ignore List", "Ignore List", 4)
+local ignoreListTitle = text(ignoreListPage, "Ignored Vehicles", 16, Theme.Text, true)
+ignoreListTitle.Position = UDim2.new(0, 16, 0, 12)
+ignoreListTitle.Size = UDim2.new(1, -32, 0, 25)
+local ignoreListSubtitle = text(ignoreListPage, "Vehicles here are hidden from minimized CARS results", 10, Theme.Muted)
+ignoreListSubtitle.Position = UDim2.new(0, 16, 0, 38)
+ignoreListSubtitle.Size = UDim2.new(1, -32, 0, 20)
+local ignoreListStatus = text(ignoreListPage, "0 ignored vehicles", 10, Theme.Accent, true)
+ignoreListStatus.Position = UDim2.new(0, 16, 0, 64)
+ignoreListStatus.Size = UDim2.new(1, -32, 0, 20)
+local ignoreListContainer = create("ScrollingFrame", {
+    Name = "IgnoreListEntries",
+    Size = UDim2.new(1, -32, 1, -104),
+    Position = UDim2.new(0, 16, 0, 92),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 3,
+    ScrollBarImageColor3 = Theme.Accent,
+    CanvasSize = UDim2.new(0, 0, 0, 0),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y
+}, ignoreListPage)
+create("UIListLayout", {Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder}, ignoreListContainer)
+
+refreshIgnoreList = function()
+    for _, child in ipairs(ignoreListContainer:GetChildren()) do
+        if child:IsA("TextButton") or child.Name == "IgnoreEmptyLabel" then child:Destroy() end
+    end
+    local names = {}
+    for name in pairs(ignoredVehicles) do table.insert(names, name) end
+    table.sort(names)
+    ignoreListStatus.Text = tostring(#names) .. " ignored vehicle types"
+    if #names == 0 then
+        local empty = text(ignoreListContainer, "Your Ignore List is empty", 11, Theme.Muted)
+        empty.Name = "IgnoreEmptyLabel"
+        empty.Size = UDim2.new(1, -6, 0, 34)
+        empty.LayoutOrder = 1
+        return
+    end
+    for index, name in ipairs(names) do
+        local row = button(ignoreListContainer, "", Theme.Surface)
+        row.Size = UDim2.new(1, -6, 0, 42)
+        row.LayoutOrder = index
+        row.Text = ""
+        local label = text(row, name, 11, Theme.Text, true)
+        label.Position = UDim2.new(0, 10, 0, 0)
+        label.Size = UDim2.new(1, -100, 1, 0)
+        local restore = button(row, "RESTORE", Theme.Accent)
+        restore.Position = UDim2.new(1, -84, 0, 7)
+        restore.Size = UDim2.new(0, 76, 0, 28)
+        restore.TextSize = 9
+        restore.MouseButton1Click:Connect(function()
+            ignoredVehicles[name] = nil
+            saveVehicleLists()
+            refreshIgnoreList()
+            if scanVehicles then scanVehicles() end
+        end)
     end
 end
+refreshIgnoreList()
 
-local function validItemId(id)
-    if type(id) ~= "string" then return false end
-    id = id:gsub("^%s+", ""):gsub("%s+$", "")
-    if id == "" or #id > 100 then return false end
-    if id:lower() == "icon" or id:lower() == "card" then return false end
-    -- Permit common game item-key characters while rejecting spaces/control chars.
-    return id:match("^[%w_%-%.]+$") ~= nil
+local function updateRememberUI()
+    rememberButton.Text = RememberSettings and "ON" or "OFF"
+    rememberButton.BackgroundColor3 =
+        RememberSettings and Theme.Accent or Theme.Border
 end
 
-local function normalizeName(s)
-    return tostring(s or ""):lower():gsub("[^%w]", "")
+local function updateZoomUI()
+    zoomToggle.Text = ZoomEnabled and "ZOOM: ON" or "ZOOM: OFF"
+    zoomToggle.BackgroundColor3 =
+        ZoomEnabled and Theme.Accent or Theme.Border
+    zoomInput.Text = tostring(ZoomDistance)
 end
 
-local function isWatchlistPurchase(name)
-    local n = normalizeName(name)
-    for _, item in ipairs(Watchlist) do
-        if n == normalizeName(item.name) or n == normalizeName(item.id) then
-            return true
+rememberButton.MouseButton1Click:Connect(function()
+    RememberSettings = not RememberSettings
+    updateRememberUI()
+
+    if RememberSettings then
+        local ok = saveConfig()
+        preferenceStatus.Text = ok
+            and "Status: remembering settings"
+            or "Status: file API unavailable"
+    else
+        if canUseFileAPI() then
+            ensureConfigFolder()
+            pcall(function()
+                writefile(CONFIG_FILE, HttpService:JSONEncode({
+                    RememberSettings = false
+                }))
+            end)
+        end
+        preferenceStatus.Text = "Status: remember is OFF"
+    end
+end)
+
+zoomToggle.MouseButton1Click:Connect(function()
+    ZoomEnabled = not ZoomEnabled
+    if ZoomEnabled then
+        applyCameraZoom()
+        preferenceStatus.Text = "Status: zoom patch enabled"
+    else
+        restoreCameraZoom()
+        preferenceStatus.Text = "Status: zoom patch disabled"
+    end
+    updateZoomUI()
+    saveConfig()
+end)
+
+zoomInput.FocusLost:Connect(function()
+    local value = tonumber(zoomInput.Text)
+    if not value then
+        zoomInput.Text = tostring(ZoomDistance)
+        preferenceStatus.Text = "Status: enter a valid number"
+        return
+    end
+
+    ZoomDistance = math.clamp(math.floor(value), 1, 1000)
+    zoomInput.Text = tostring(ZoomDistance)
+    if ZoomEnabled then
+        applyCameraZoom()
+    end
+    preferenceStatus.Text = "Status: zoom distance set to "
+        .. ZoomDistance .. " (scroll out to maximum)"
+    saveConfig()
+end)
+
+saveButton.MouseButton1Click:Connect(function()
+    local ok = saveConfig()
+    preferenceStatus.Text = ok
+        and "Status: settings saved to VEZA_GUI_settings.json"
+        or "Status: save failed — executor file API unavailable"
+end)
+
+resetButton.MouseButton1Click:Connect(function()
+    Settings.MaxDistance = 1000
+    Settings.UnlimitedDistance = false
+    zombieESPEnabled = true
+    vehicleESPEnabled = true
+    militaryMapEnabled = true
+    updateMilitaryToggle()
+    ZoomEnabled = true
+    ZoomDistance = 300
+
+    updateSlider()
+    updateUnlimited()
+    updateZombieToggle()
+    updateVehicleToggle()
+    updateZoomUI()
+    applyCameraZoom()
+    saveConfig()
+
+    preferenceStatus.Text = "Status: defaults restored"
+end)
+
+--========================================================
+-- PAGE 4: ZOMBIE ESP
+--========================================================
+
+local zombiePage = registerPage(
+    "ZombieESP", "Zombie ESP", 4
+)
+
+local zombieTitle = text(
+    zombiePage, "Zombie ESP", 16, Theme.Text, true
+)
+zombieTitle.Position = UDim2.new(0, 16, 0, 12)
+zombieTitle.Size = UDim2.new(1, -32, 0, 25)
+
+local zombieSubtitle = text(
+    zombiePage,
+    "Highlight zombies around the map",
+    10, Theme.Muted
+)
+zombieSubtitle.Position = UDim2.new(0, 16, 0, 37)
+zombieSubtitle.Size = UDim2.new(1, -32, 0, 20)
+
+local zombiePanel = create("Frame", {
+    Size = UDim2.new(1, -32, 0, 85),
+    Position = UDim2.new(0, 16, 0, 70),
+    BackgroundColor3 = Theme.Surface,
+    BackgroundTransparency = 0.16,
+    BorderSizePixel = 0
+}, zombiePage)
+round(zombiePanel, 7)
+
+local zombieOption = text(
+    zombiePanel, "Zombie Highlight",
+    12, Theme.Text, true
+)
+zombieOption.Position = UDim2.new(0, 12, 0, 12)
+zombieOption.Size = UDim2.new(0.55, 0, 0, 22)
+
+local zombieDescription = text(
+    zombiePanel,
+    "Glow visible on detected zombies",
+    9, Theme.Muted
+)
+zombieDescription.Position = UDim2.new(0, 12, 0, 37)
+zombieDescription.Size = UDim2.new(0.65, 0, 0, 20)
+
+local zombieToggle = button(
+    zombiePanel, "ESP: OFF", Theme.Border
+)
+zombieToggle.Position = UDim2.new(1, -92, 0, 24)
+zombieToggle.Size = UDim2.new(0, 78, 0, 32)
+
+local zombieStatusPanel = create("Frame", {
+    Size = UDim2.new(1, -32, 0, 65),
+    Position = UDim2.new(0, 16, 0, 166),
+    BackgroundColor3 = Theme.Surface,
+    BackgroundTransparency = 0.16,
+    BorderSizePixel = 0
+}, zombiePage)
+round(zombieStatusPanel, 7)
+
+local zombieStatus = text(
+    zombieStatusPanel,
+    "STATUS: DISABLED",
+    11, Theme.Muted, true
+)
+zombieStatus.Position = UDim2.new(0, 12, 0, 8)
+zombieStatus.Size = UDim2.new(1, -24, 0, 20)
+
+local zombieCount = text(
+    zombieStatusPanel,
+    "ZOMBIES HIGHLIGHTED: 0",
+    10, Theme.Text
+)
+zombieCount.Position = UDim2.new(0, 12, 0, 32)
+zombieCount.Size = UDim2.new(1, -24, 0, 20)
+
+local zombieInfo = text(
+    zombiePage,
+    "Client-side highlight. Newly replicated zombies are detected automatically.",
+    10, Theme.Muted
+)
+zombieInfo.Position = UDim2.new(0, 16, 0, 244)
+zombieInfo.Size = UDim2.new(1, -32, 0, 42)
+zombieInfo.TextWrapped = true
+
+--========================================================
+-- PAGE 5: MILITARY MAP HIGHLIGHT
+--========================================================
+
+local militaryPage = registerPage(
+    "MilitaryMap", "Military Map", 5
+)
+
+local militaryTitle = text(
+    militaryPage, "Military Location", 16, Theme.Text, true
+)
+militaryTitle.Position = UDim2.new(0, 16, 0, 12)
+militaryTitle.Size = UDim2.new(1, -32, 0, 25)
+
+local militarySubtitle = text(
+    militaryPage,
+    "Highlight selected military base zones on the Hush map",
+    10, Theme.Muted
+)
+militarySubtitle.Position = UDim2.new(0, 16, 0, 37)
+militarySubtitle.Size = UDim2.new(1, -32, 0, 20)
+
+local militaryPanel = create("Frame", {
+    Size = UDim2.new(1, -32, 0, 90),
+    Position = UDim2.new(0, 16, 0, 72),
+    BackgroundColor3 = Theme.Surface,
+    BackgroundTransparency = 0.16,
+    BorderSizePixel = 0
+}, militaryPage)
+round(militaryPanel, 7)
+
+local militaryOption = text(
+    militaryPanel, "Military Zone Highlight",
+    12, Theme.Text, true
+)
+militaryOption.Position = UDim2.new(0, 12, 0, 12)
+militaryOption.Size = UDim2.new(0.62, 0, 0, 22)
+
+local militaryDescription = text(
+    militaryPanel,
+    "Yellow outline on selected map squares",
+    9, Theme.Muted
+)
+militaryDescription.Position = UDim2.new(0, 12, 0, 39)
+militaryDescription.Size = UDim2.new(0.68, 0, 0, 20)
+
+local militaryToggle = button(
+    militaryPanel, "MAP ESP: OFF", Theme.Border
+)
+militaryToggle.Position = UDim2.new(1, -102, 0, 27)
+militaryToggle.Size = UDim2.new(0, 88, 0, 32)
+
+local militaryStatus = text(
+    militaryPage, "STATUS: DISABLED",
+    10, Theme.Muted, true
+)
+militaryStatus.Position = UDim2.new(0, 16, 0, 178)
+militaryStatus.Size = UDim2.new(1, -32, 0, 22)
+
+local militaryInfo = text(
+    militaryPage,
+    "Highlights the eight selected military map tiles. Requires HushMap to be loaded.",
+    10, Theme.Muted
+)
+militaryInfo.Position = UDim2.new(0, 16, 0, 208)
+militaryInfo.Size = UDim2.new(1, -32, 0, 48)
+militaryInfo.TextWrapped = true
+
+--========================================================
+-- PAGE 6: ENVIRONMENT (FORCE DAY + NO SNOW)
+--========================================================
+
+local environmentPage = registerPage(
+    "Environment", "Environment", 6
+)
+
+local environmentTitle = text(
+    environmentPage, "Environment Override", 16, Theme.Text, true
+)
+environmentTitle.Position = UDim2.new(0, 16, 0, 12)
+environmentTitle.Size = UDim2.new(1, -32, 0, 25)
+
+local environmentSubtitle = text(
+    environmentPage,
+    "Local visual time and weather preset",
+    10, Theme.Muted
+)
+environmentSubtitle.Position = UDim2.new(0, 16, 0, 37)
+environmentSubtitle.Size = UDim2.new(1, -32, 0, 20)
+
+local environmentPanel = create("Frame", {
+    Size = UDim2.new(1, -32, 0, 94),
+    Position = UDim2.new(0, 16, 0, 72),
+    BackgroundColor3 = Theme.Surface,
+    BackgroundTransparency = 0.16,
+    BorderSizePixel = 0
+}, environmentPage)
+round(environmentPanel, 7)
+
+local environmentOption = text(
+    environmentPanel, "Force Day + No Snow",
+    12, Theme.Text, true
+)
+environmentOption.Position = UDim2.new(0, 12, 0, 10)
+environmentOption.Size = UDim2.new(0.62, 0, 0, 22)
+
+local environmentDescription = text(
+    environmentPanel,
+    "Sets local Raid preset to Day / Clear",
+    9, Theme.Muted
+)
+environmentDescription.Position = UDim2.new(0, 12, 0, 35)
+environmentDescription.Size = UDim2.new(0.68, 0, 0, 20)
+
+local environmentToggle = button(
+    environmentPanel, "ON", Theme.Accent
+)
+environmentToggle.Position = UDim2.new(1, -76, 0, 27)
+environmentToggle.Size = UDim2.new(0, 62, 0, 32)
+
+local environmentStatus = text(
+    environmentPage, "STATUS: WAITING FOR ATMOSPHERE",
+    10, Theme.Muted, true
+)
+environmentStatus.Position = UDim2.new(0, 16, 0, 182)
+environmentStatus.Size = UDim2.new(1, -32, 0, 22)
+
+local environmentInfo = text(
+    environmentPage,
+    "Client-side only. Does not change server time or weather. Requires the Atmosphere controller to be loaded.",
+    10, Theme.Muted
+)
+environmentInfo.Position = UDim2.new(0, 16, 0, 211)
+environmentInfo.Size = UDim2.new(1, -32, 0, 48)
+environmentInfo.TextWrapped = true
+
+-- The override is enabled by default whenever VEZA starts.
+local forceDayNoSnowEnabled = true
+local atmosphereController = nil
+
+local function findAtmosphereController()
+    if atmosphereController
+        and type(atmosphereController.setOverride) == "function"
+        and type(atmosphereController.clearOverride) == "function" then
+        return atmosphereController
+    end
+
+    if type(getgc) ~= "function" then
+        return nil, "GETGC UNAVAILABLE"
+    end
+
+    local ok, objects = pcall(getgc, true)
+    if not ok or type(objects) ~= "table" then
+        return nil, "CANNOT READ CLIENT OBJECTS"
+    end
+
+    for _, object in ipairs(objects) do
+        if type(object) == "table"
+            and object.name == "Atmosphere"
+            and type(object.setOverride) == "function"
+            and type(object.clearOverride) == "function" then
+            atmosphereController = object
+            return object
         end
     end
+
+    return nil, "WAITING FOR ATMOSPHERE"
+end
+
+local function applyDayNoSnow()
+    local controller, reason = findAtmosphereController()
+    if not controller then
+        environmentStatus.Text = "STATUS: " .. tostring(reason)
+        environmentStatus.TextColor3 = Theme.Muted
+        return false
+    end
+
+    local ok, result = pcall(function()
+        controller.setOverride("Raid", "Day", "Clear", 0)
+    end)
+
+    if ok then
+        environmentStatus.Text = "STATUS: FORCE DAY + NO SNOW ACTIVE"
+        environmentStatus.TextColor3 = Theme.Accent
+        return true
+    end
+
+    environmentStatus.Text = "STATUS: OVERRIDE FAILED"
+    environmentStatus.TextColor3 = Theme.Red
+    warn("[VEZA] Force Day / No Snow failed: " .. tostring(result))
     return false
 end
 
---==================================================
--- MARKET GRID ID SCANNER
---==================================================
-
-local function walkPath(root, path)
-    local current = root
-    for _, name in ipairs(path) do
-        if not current then return nil end
-        current = current:FindFirstChild(name)
+local function restoreEnvironment()
+    local controller = atmosphereController
+    if not controller then
+        controller = findAtmosphereController()
     end
-    return current
-end
 
-local function getMarketGrid()
-    local paths = {
-        {"HushMenu","Root","MenuShell","Pages","Page_market","Market","Content","Inner","Body","Sub_browse","Grid"},
-        {"HushMenu","Root","Pages","Page_market","Market","Content","Inner","Body","Sub_browse","Grid"},
-    }
-    for _, path in ipairs(paths) do
-        local grid = walkPath(PlayerGui, path)
-        if grid and (grid:IsA("ScrollingFrame") or grid:IsA("Frame")) then
-            return grid
-        end
+    if not controller then
+        environmentStatus.Text = "STATUS: CONTROLLER NOT FOUND"
+        environmentStatus.TextColor3 = Theme.Muted
+        return false
     end
-end
 
-local function scanMarketGrid()
-    if GridScanning then return end
-    GridScanning = true
-    local ok, err = pcall(function()
-        local grid = getMarketGrid()
-        if not grid then
-            if GridStatus then GridStatus.Text = "GRID NOT FOUND — OPEN MARKET" end
-            return
-        end
-        local added, cards = 0, 0
-        for _, card in ipairs(grid:GetChildren()) do
-            if card:IsA("TextButton") then
-                cards += 1
-                local id = card:GetAttribute("ItemId")
-                if type(id) ~= "string" or id == "" then
-                    local outerIcon = card:FindFirstChild("Icon")
-                    local viewport = outerIcon and outerIcon:FindFirstChild("Icon")
-                    if viewport then
-                        for _, preview in ipairs(viewport:GetChildren()) do
-                            if preview:IsA("Model") then
-                                id = preview:GetAttribute("ItemId")
-                                if type(id) == "string" and id ~= "" then break end
-                            end
-                        end
-                    end
-                end
-                if validItemId(id) and not DiscoveredSet[id] then
-                    DiscoveredSet[id] = true
-                    table.insert(DiscoveredIDs, id)
-                    added += 1
-                end
-            end
-        end
-        table.sort(DiscoveredIDs)
-        if GridStatus then
-            GridStatus.Text = "GRID CONNECTED  •  " .. cards .. " CARDS  •  " .. #DiscoveredIDs .. " IDS"
-            GridStatus.TextColor3 = COLORS.green
-        end
-        if added > 0 then
-            saveState()
-            addLog("Grid discovered " .. added .. " new IDs", "ID SCANNER")
-            refreshIDList()
-        end
+    local ok, result = pcall(function()
+        controller.clearOverride(0)
     end)
-    GridScanning = false
-    if not ok then addLog("Grid scan error: " .. tostring(err), "ERROR") end
-end
 
---==================================================
--- MARKET API / SCANNING
---==================================================
-
-local function getMarketItem(itemId)
-    local ok, response = pcall(function()
-        return MenuGet:InvokeServer({offset=0, id=itemId, what="bmItem"})
-    end)
-    if not ok then return nil, tostring(response) end
-    if type(response) ~= "table" then return nil, "Invalid response" end
-    if response.ok ~= true then return nil, response.text or response.code or "Request rejected" end
-    return response
-end
-
-local function getLowestListing(listings)
-    local lowest
-    if type(listings) ~= "table" then return nil end
-    for _, listing in pairs(listings) do
-        if type(listing) == "table" then
-            local price = tonumber(listing.p) or tonumber(listing.u)
-            if price and price > 0 and (not lowest or price < lowest.price) then
-                lowest = {
-                    price=price, unitPrice=tonumber(listing.u),
-                    listingId=listing.lid, quantity=tonumber(listing.n),
-                    own=listing.own,
-                }
-            end
-        end
-    end
-    return lowest
-end
-
-local function autoBuyMarketItem(item, lowest)
-    if not item.autoBuy or not lowest or lowest.price > item.maxPrice then return end
-    local now = os.clock()
-    if now - (item.lastBuyAttempt or 0) < CONFIG.AutoBuyCooldown then return end
-    item.lastBuyAttempt = now
-    local ok, err = pcall(function()
-        MenuOp:FireServer({
-            op="bmBuyBest", maxUnit=item.maxPrice, id=item.id,
-            maxTotal=lowest.price, req=1,
-        })
-    end)
     if ok then
-        TotalMarketRequests += 1
-        addLog("AUTO BUY SENT: " .. item.name .. " @ $" .. formatNumber(lowest.price), "MARKET BUY")
-    else
-        addLog("Market buy error: " .. tostring(err), "ERROR")
+        environmentStatus.Text = "STATUS: GAME DEFAULT RESTORED"
+        environmentStatus.TextColor3 = Theme.Muted
+        return true
     end
+
+    environmentStatus.Text = "STATUS: RESTORE FAILED"
+    environmentStatus.TextColor3 = Theme.Red
+    warn("[VEZA] Environment restore failed: " .. tostring(result))
+    return false
 end
 
-local function scanMarketItem(item)
-    local response, err = getMarketItem(item.id)
-    if not response then
-        Results[item.id] = {success=false, error=err}
-        addLog(item.id .. ": " .. tostring(err), "ERROR")
+local function updateEnvironmentToggle()
+    environmentToggle.Text = forceDayNoSnowEnabled and "ON" or "OFF"
+    environmentToggle.BackgroundColor3 =
+        forceDayNoSnowEnabled and Theme.Accent or Theme.Border
+end
+
+environmentToggle.MouseButton1Click:Connect(function()
+    forceDayNoSnowEnabled = not forceDayNoSnowEnabled
+    updateEnvironmentToggle()
+
+    if forceDayNoSnowEnabled then
+        applyDayNoSnow()
+    else
+        restoreEnvironment()
+    end
+end)
+
+--========================================================
+-- ZOMBIE ESP ENGINE
+--========================================================
+
+
+local function getZombieFolder()
+    local hushLocal = workspace:FindFirstChild("HushLocal")
+
+    if not hushLocal then
+        return nil
+    end
+
+    return hushLocal:FindFirstChild("Zombies")
+end
+
+local function clearZombieESP()
+    for model, highlight in pairs(zombieHighlights) do
+        if highlight then
+            pcall(function()
+                highlight:Destroy()
+            end)
+        end
+
+        zombieHighlights[model] = nil
+    end
+
+    zombieCount.Text = "ZOMBIES HIGHLIGHTED: 0"
+end
+
+local function addZombieHighlight(model)
+    if not model or not model.Parent then
+        return false
+    end
+
+    if not (
+        model:IsA("Model")
+        or model:IsA("BasePart")
+    ) then
+        return false
+    end
+
+    if zombieHighlights[model] then
+        return true
+    end
+
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "VEZA_ZombieESP"
+    highlight.Adornee = model
+
+    highlight.FillColor = Theme.ZombieFill
+    highlight.OutlineColor = Theme.ZombieOutline
+
+    highlight.FillTransparency = 0.78
+    highlight.OutlineTransparency = 0.05
+
+    -- Visible only when not blocked by geometry
+    highlight.DepthMode = Enum.HighlightDepthMode.Occluded
+
+    highlight.Parent = model
+
+    zombieHighlights[model] = highlight
+
+    return true
+end
+
+local function scanZombies()
+    if not zombieESPEnabled then
         return
     end
-    local listings = response.listings or {}
-    local lowest = getLowestListing(listings)
-    Results[item.id] = {
-        success=true, lowest=lowest and lowest.price or nil,
-        count=tonumber(response.total) or #listings,
-        timestamp=os.time(),
-    }
-    if lowest then
-        autoBuyMarketItem(item, lowest)
-        if lowest.price <= item.maxPrice then
-            addLog(item.name .. " TARGET: $" .. formatNumber(lowest.price), "TARGET")
-        else
-            addLog(item.name .. " lowest $" .. formatNumber(lowest.price), "SCAN")
+
+    local folder = getZombieFolder()
+
+    if not folder then
+        zombieStatus.Text = "STATUS: WAITING FOR ZOMBIES"
+        zombieStatus.TextColor3 = Theme.Muted
+        return
+    end
+
+    local count = 0
+    local present = {}
+
+    for _, model in ipairs(folder:GetChildren()) do
+        if addZombieHighlight(model) then
+            present[model] = true
+            count += 1
         end
+    end
+
+    -- Remove highlights from despawned models
+    for model, highlight in pairs(zombieHighlights) do
+        if not present[model] then
+            if highlight then
+                highlight:Destroy()
+            end
+
+            zombieHighlights[model] = nil
+        end
+    end
+
+    zombieStatus.Text = "STATUS: ESP ACTIVE"
+    zombieStatus.TextColor3 = Theme.Accent
+
+    zombieCount.Text =
+        "ZOMBIES HIGHLIGHTED: " .. count
+end
+
+updateZombieToggle = function()
+    if zombieESPEnabled then
+        zombieToggle.Text = "ESP: ON"
+        zombieToggle.BackgroundColor3 = Theme.Accent
+
+        zombieStatus.Text = "STATUS: ESP ACTIVE"
+        zombieStatus.TextColor3 = Theme.Accent
+
+        scanZombies()
     else
-        addLog(item.name .. " has no active listing", "SCAN")
+        zombieToggle.Text = "ESP: OFF"
+        zombieToggle.BackgroundColor3 = Theme.Border
+
+        zombieStatus.Text = "STATUS: DISABLED"
+        zombieStatus.TextColor3 = Theme.Muted
+
+        clearZombieESP()
     end
 end
 
-local function buildScanOrder()
-    local normal, priority = {}, {}
-    for _, item in ipairs(Watchlist) do
-        if item.enabled then
-            table.insert(item.priority and priority or normal, item)
-        end
-    end
-    if #normal == 0 then return priority end
-    if #priority == 0 then return normal end
-    local out = {}
-    for _, item in ipairs(normal) do
-        table.insert(out, item)
-        for _, p in ipairs(priority) do table.insert(out, p) end
-    end
-    return out
+if _G.VEZA_LoadZombieESP == true then
+    zombieESPEnabled = true
+    _G.VEZA_LoadZombieESP = nil
 end
 
-local function performMarketScan()
-    if Scanning then return end
-    Scanning = true
-    TotalScans += 1
-    if MarketStatus then MarketStatus.Text = "SCANNING" end
-    if ScanCount then ScanCount.Text = "SCANS  " .. TotalScans end
-    local order = buildScanOrder()
-    if #order == 0 then
-        addLog("No enabled watchlist items", "WARNING")
-    else
-        for _, item in ipairs(order) do
-            if not ScreenGui or not ScreenGui.Parent then break end
-            scanMarketItem(item)
-            refreshWatchlist()
-            task.wait(CONFIG.RequestDelay)
-        end
+--========================================================
+-- MILITARY MAP HIGHLIGHT ENGINE
+--========================================================
+
+local militaryMapTargets = {}
+local militaryMapOriginals = {}
+
+local function getMilitaryMapTargets()
+    local hushMap = PlayerGui:FindFirstChild("HushMap")
+    local root = hushMap and hushMap:FindFirstChild("Root")
+    local mapPanel = root and root:FindFirstChild("MapPanel")
+    local content = mapPanel and mapPanel:FindFirstChild("Content")
+    local sheetHolder = content and content:FindFirstChild("SheetHolder")
+    local zoomLayer = sheetHolder and sheetHolder:FindFirstChild("ZoomLayer")
+    local sheet = zoomLayer and zoomLayer:FindFirstChild("Sheet")
+    local area = sheet and sheet:FindFirstChild("Area")
+    local ground = area and area:FindFirstChild("Ground")
+
+    if not ground then
+        return {}
     end
-    Scanning = false
-    if MarketStatus then
-        MarketStatus.Text = Monitoring and "MONITORING" or "IDLE"
-        MarketStatus.TextColor3 = Monitoring and COLORS.green or COLORS.orange
-    end
-end
 
-local function startMarketMonitor()
-    if Monitoring then return end
-    Monitoring = true
-    ScanToken += 1
-    local token = ScanToken
-    MarketStatus.Text = "MONITORING"
-    MarketStatus.TextColor3 = COLORS.green
-    addLog("Market monitoring started", "SYSTEM")
-    task.spawn(function()
-        while Monitoring and ScanToken == token do
-            if not Scanning then performMarketScan() end
-            task.wait(CONFIG.ScanInterval)
-        end
-    end)
-end
+    local children = ground:GetChildren()
 
-local function stopMarketMonitor()
-    Monitoring = false
-    ScanToken += 1
-    if MarketStatus then
-        MarketStatus.Text = "STOPPED"
-        MarketStatus.TextColor3 = COLORS.orange
-    end
-    addLog("Market monitoring stopped", "SYSTEM")
-end
-
---==================================================
--- PURCHASE TOAST REPORT
---==================================================
-
-local function parsePurchaseToast(text)
-    if type(text) ~= "string" then return nil end
-    local clean = text:gsub("\n"," "):gsub("%s+"," ")
-    local qty, item, priceText = clean:match("Bought:%s*(%d+)%s*x%s*(.-)%s+for%s+%$%s*([%d,]+)")
-    if not qty or not item or not priceText then return nil end
-    local cleanPrice = (priceText:gsub(",",""))
-    local price = tonumber(cleanPrice)
-    if not price then return nil end
-    return {
-        quantity=tonumber(qty), item=item:gsub("%s+$",""), price=price,
-        raw=clean, time=os.date("%H:%M:%S"),
+    -- Ground is the parent container, not a single military tile.
+    -- Highlight the eight specific map objects supplied by the user.
+    local targets = {
+        children[28],
+        ground:FindFirstChild("Biome_military"),
+        children[4],
+        children[19],
+        children[12],
+        children[23],
+        children[24],
+        children[7],
     }
-end
 
-local function inspectPurchaseText(obj)
-    if not obj:IsA("TextLabel") and not obj:IsA("TextButton") then return end
-    local function inspect()
-        local text = obj.Text
-        if type(text) ~= "string" or text == "" or SeenPurchaseText[obj] == text then return end
-        SeenPurchaseText[obj] = text
-        local record = parsePurchaseToast(text)
-        if not record or not isWatchlistPurchase(record.item) then return end
-        table.insert(PurchaseRecords, 1, record)
-        PurchaseTotalSpent += record.price
-        PurchaseTotalUnits += record.quantity
-        saveState()
-        addLog("Purchase confirmed: " .. record.quantity .. " x " .. record.item .. " for $" .. formatNumber(record.price), "PURCHASE")
+    local valid = {}
+    local seen = {}
+
+    local function addGuiObject(object)
+        if object and object:IsA("GuiObject") and not seen[object] then
+            seen[object] = true
+            table.insert(valid, object)
+        end
     end
-    inspect()
-    table.insert(PurchaseConnections, obj:GetPropertyChangedSignal("Text"):Connect(inspect))
-end
 
---==================================================
--- NPC RESTOCK TIMER SCANNER
---==================================================
-
-local function getNPCText()
-    local ok, toolbar = pcall(function()
-        local menu = PlayerGui:FindFirstChild("HushMenu")
-        local root = menu and menu:FindFirstChild("Root")
-        local pages = root and root:FindFirstChild("Pages")
-        local page = pages and pages:FindFirstChild("Page_traders")
-        local traders = page and page:FindFirstChild("Traders")
-        local content = traders and traders:FindFirstChild("Content")
-        local right = content and content:FindFirstChild("Right")
-        local body = right and right:FindFirstChild("Body")
-        return body and body:FindFirstChild("Toolbar")
-    end)
-    if not ok or not toolbar then return nil, nil end
-
-    for _, obj in ipairs(toolbar:GetDescendants()) do
-        if obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox") then
-            local text = tostring(obj.Text or "")
-            local mm, ss = text:match("[Rr]estock%s+in%s+(%d+):(%d+)")
-            if mm and ss then
-                mm, ss = tonumber(mm), tonumber(ss)
-                if mm and ss and ss < 60 then
-                    return mm * 60 + ss, text
+    for _, target in ipairs(targets) do
+        if target then
+            if target:IsA("GuiObject") then
+                -- Normal map tile (Frame / ImageLabel / ImageButton).
+                addGuiObject(target)
+            else
+                -- Some map zones are containers; highlight their GUI descendants.
+                for _, descendant in ipairs(target:GetDescendants()) do
+                    addGuiObject(descendant)
                 end
             end
         end
     end
-    return nil, nil
+
+    return valid
 end
 
-local function formatTime(seconds)
-    return string.format("%02d:%02d", math.floor(seconds/60), seconds%60)
+local function clearMilitaryMapHighlight()
+    for object, record in pairs(militaryMapOriginals) do
+        if object and object.Parent then
+            pcall(function()
+                if record.stroke then
+                    record.stroke:Destroy()
+                end
+                object.BackgroundColor3 = record.color
+                object.BackgroundTransparency = record.transparency
+                if record.hasImageColor then
+                    object.ImageColor3 = record.imageColor
+                end
+            end)
+        end
+        militaryMapOriginals[object] = nil
+    end
+    militaryMapTargets = {}
 end
 
-local function buyAllNPCAmmo(manual)
-    manual = manual == true
+local function scanMilitaryMap()
+    local targets = getMilitaryMapTargets()
+    local present = {}
 
-    if NPCBuying then
-        if NPCAction then
-            NPCAction.Text = "A PURCHASE BATCH IS ALREADY RUNNING"
-        end
-        addLog("Buy All Now ignored: an NPC batch is already running", "WARNING")
-        return false
-    end
+    for _, object in ipairs(targets) do
+        present[object] = true
+        if not militaryMapOriginals[object] then
+            local stroke = Instance.new("UIStroke")
+            stroke.Name = "VEZA_MilitaryMapStroke"
+            stroke.Color = Color3.fromRGB(255, 220, 40)
+            stroke.Thickness = 2
+            stroke.Transparency = 0
+            stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+            stroke.Parent = object
 
-    if not manual and not NPCMonitoring then
-        return false
-    end
-
-    NPCBuying = true
-    local sent = 0
-    local interrupted = false
-
-    NPCAction.Text = (manual and "MANUAL BUY ALL" or "AUTO RESTOCK BUY")
-        .. "  •  0 / " .. #ammoList
-    addLog(manual and "Manual Buy All Now started" or "Automatic NPC batch started", "NPC")
-
-    for i, ammo in ipairs(ammoList) do
-        -- Manual batches are independent from the monitor state. Automatic batches
-        -- still stop if the user disables the monitor while the batch is running.
-        if not manual and not NPCMonitoring then
-            interrupted = true
-            break
-        end
-
-        NPCAction.Text = string.format(
-            "%s  •  %d / %d  •  %s",
-            manual and "MANUAL BUYING" or "AUTO BUYING",
-            i, #ammoList, ammo.offer
-        )
-
-        -- Match the exact argument shape from the working RemoteEvent examples:
-        -- args[1] is the payload table, then FireServer(unpack(args)).
-        local args = {
-            [1] = {
-                ["trader"] = "gunner",
-                ["op"] = "buy",
-                ["count"] = ammo.count,
-                ["offer"] = ammo.offer,
-                ["req"] = ammo.req,
-            }
-        }
-
-        local ok, err = pcall(function()
-            if not MenuOp or not MenuOp:IsA("RemoteEvent") then
-                error("HushNet.menu.op is missing or is not a RemoteEvent")
+            local originalImageColor
+            local hasImageColor = object:IsA("ImageLabel")
+                or object:IsA("ImageButton")
+            if hasImageColor then
+                originalImageColor = object.ImageColor3
             end
-            MenuOp:FireServer(unpack(args))
+
+            militaryMapOriginals[object] = {
+                stroke = stroke,
+                color = object.BackgroundColor3,
+                transparency = object.BackgroundTransparency,
+                imageColor = originalImageColor,
+                hasImageColor = hasImageColor,
+            }
+
+            object.BackgroundColor3 = Color3.fromRGB(255, 215, 45)
+            object.BackgroundTransparency = math.min(
+                object.BackgroundTransparency, 0.55
+            )
+            if hasImageColor then
+                object.ImageColor3 = Color3.fromRGB(255, 225, 95)
+            end
+        end
+    end
+
+    for object, record in pairs(militaryMapOriginals) do
+        if not present[object] then
+            if object and object.Parent then
+                pcall(function()
+                    if record.stroke then record.stroke:Destroy() end
+                    object.BackgroundColor3 = record.color
+                    object.BackgroundTransparency = record.transparency
+                    if record.hasImageColor then
+                        object.ImageColor3 = record.imageColor
+                    end
+                end)
+            end
+            militaryMapOriginals[object] = nil
+        end
+    end
+
+    militaryMapTargets = targets
+    militaryStatus.Text = "STATUS: ACTIVE • " .. tostring(#targets) .. " MAP OBJECTS"
+    militaryStatus.TextColor3 = Theme.Accent
+end
+
+local function disableMilitaryMap()
+    clearMilitaryMapHighlight()
+    militaryStatus.Text = "STATUS: DISABLED"
+    militaryStatus.TextColor3 = Theme.Muted
+end
+
+updateMilitaryToggle = function()
+    if militaryMapEnabled then
+        militaryToggle.Text = "MAP ESP: ON"
+        militaryToggle.BackgroundColor3 = Color3.fromRGB(190, 145, 25)
+        scanMilitaryMap()
+        if #militaryMapTargets == 0 then
+            militaryStatus.Text = "STATUS: HUSH MAP NOT READY"
+            militaryStatus.TextColor3 = Theme.Red
+        end
+    else
+        militaryToggle.Text = "MAP ESP: OFF"
+        militaryToggle.BackgroundColor3 = Theme.Border
+        disableMilitaryMap()
+    end
+end
+
+if _G.VEZA_LoadMilitaryMap == true then
+    militaryMapEnabled = true
+    _G.VEZA_LoadMilitaryMap = nil
+end
+
+militaryToggle.MouseButton1Click:Connect(function()
+    militaryMapEnabled = not militaryMapEnabled
+    updateMilitaryToggle()
+    saveConfig()
+end)
+
+zombieToggle.MouseButton1Click:Connect(function()
+    zombieESPEnabled = not zombieESPEnabled
+    updateZombieToggle()
+    saveConfig()
+end)
+
+--========================================================
+-- VEHICLE TRACKER ENGINE
+--========================================================
+
+local function getVehicleFolder()
+    local raid = workspace:FindFirstChild("Raid")
+    return raid and raid:FindFirstChild("Vehicles")
+end
+
+local vehicleHighlights = {}
+
+local function clearVehicleESP()
+    for model, highlight in pairs(vehicleHighlights) do
+        if highlight then
+            pcall(function() highlight:Destroy() end)
+        end
+        vehicleHighlights[model] = nil
+    end
+end
+
+local function addVehicleHighlight(model)
+    if not model or not model.Parent then return false end
+    if not (model:IsA("Model") or model:IsA("BasePart")) then
+        return false
+    end
+    if vehicleHighlights[model] then return true end
+
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "VEZA_VehicleESP"
+    highlight.Adornee = model
+    highlight.FillColor = Color3.fromRGB(255, 220, 40)
+    highlight.OutlineColor = Color3.fromRGB(255, 245, 150)
+    highlight.FillTransparency = 0.78
+    highlight.OutlineTransparency = 0.05
+    highlight.DepthMode = Enum.HighlightDepthMode.Occluded
+    highlight.Parent = model
+
+    vehicleHighlights[model] = highlight
+    return true
+end
+
+local function scanVehicleESP()
+    if not vehicleESPEnabled then return end
+    local folder = getVehicleFolder()
+    if not folder then
+        clearVehicleESP()
+        return
+    end
+
+    local present = {}
+    for _, model in ipairs(folder:GetChildren()) do
+        if addVehicleHighlight(model) then
+            present[model] = true
+        end
+    end
+
+    for model, highlight in pairs(vehicleHighlights) do
+        if not present[model] or not model.Parent then
+            if highlight then pcall(function() highlight:Destroy() end) end
+            vehicleHighlights[model] = nil
+        end
+    end
+end
+
+updateVehicleToggle = function()
+    vehicleESPToggle.Text = vehicleESPEnabled and "CAR ESP: ON" or "CAR ESP: OFF"
+    vehicleESPToggle.BackgroundColor3 = vehicleESPEnabled
+        and Color3.fromRGB(205, 170, 25) or Theme.Border
+
+    if vehicleESPEnabled then
+        scanVehicleESP()
+    else
+        clearVehicleESP()
+    end
+end
+
+vehicleESPToggle.MouseButton1Click:Connect(function()
+    vehicleESPEnabled = not vehicleESPEnabled
+    updateVehicleToggle()
+    saveConfig()
+end)
+
+if _G.VEZA_LoadVehicleESP == true then
+    vehicleESPEnabled = true
+end
+_G.VEZA_LoadVehicleESP = nil
+
+local function getRoot()
+    local character = Player.Character
+
+    return character
+        and character:FindFirstChild("HumanoidRootPart")
+end
+
+local function getVehiclePosition(model)
+    if not model or not model.Parent then
+        return nil
+    end
+
+    local chassis = model:FindFirstChild("Chassis")
+
+    if chassis and chassis:IsA("BasePart") then
+        return chassis.Position
+    end
+
+    if model:IsA("BasePart") then
+        return model.Position
+    end
+
+    if model:IsA("Model") then
+        local ok, result = pcall(function()
+            return model:GetPivot().Position
         end)
 
         if ok then
-            sent += 1
-            TotalNPCRequests += 1
-            NPCRequests.Text = "REQUESTS FIRED  " .. TotalNPCRequests
-            addLog(string.format(
-                "%s request fired: %s | count=%d | req=%d",
-                manual and "MANUAL" or "AUTO",
-                ammo.offer, ammo.count, ammo.req
-            ), "NPC")
-        else
-            addLog("NPC request failed " .. ammo.offer .. ": " .. tostring(err), "ERROR")
+            return result
         end
-
-        task.wait(CONFIG.NPCRequestDelay)
     end
 
-    if sent > 0 then
-        TotalNPCCycles += 1
-        NPCCycles.Text = "BATCHES  " .. TotalNPCCycles .. "     •     AMMO TYPES  11"
+    return nil
+end
+
+local function getTrackingInfo(model)
+    local root = getRoot()
+    local position = getVehiclePosition(model)
+
+    if not root or not position then
+        return nil, "?", "Unknown"
     end
 
-    if interrupted then
-        NPCAction.Text = "AUTO BATCH INTERRUPTED  •  " .. sent .. " / " .. #ammoList
-        addLog("Automatic NPC batch interrupted after " .. sent .. " requests", "WARNING")
-    elseif manual then
-        NPCAction.Text = NPCMonitoring
-            and ("MANUAL BATCH COMPLETE  •  AUTO TIMER STILL RUNNING")
-            or "MANUAL BATCH COMPLETE"
-        addLog("Manual NPC batch finished: " .. sent .. " / " .. #ammoList .. " RemoteEvent calls fired (server purchase not confirmed)", "NPC")
+    local difference = position - root.Position
+    local distance = difference.Magnitude
+
+    local flat = Vector3.new(
+        difference.X, 0, difference.Z
+    )
+
+    if flat.Magnitude < 0.1 then
+        return distance, "•", "Here"
+    end
+
+    local localDirection =
+        root.CFrame:VectorToObjectSpace(flat.Unit)
+
+    local angle = math.deg(math.atan2(
+        localDirection.X,
+        -localDirection.Z
+    ))
+
+    if angle >= -22.5 and angle < 22.5 then
+        return distance, "↑", "Front"
+    elseif angle >= 22.5 and angle < 67.5 then
+        return distance, "↗", "Front Right"
+    elseif angle >= 67.5 and angle < 112.5 then
+        return distance, "→", "Right"
+    elseif angle >= 112.5 and angle < 157.5 then
+        return distance, "↘", "Back Right"
+    elseif angle >= 157.5 or angle < -157.5 then
+        return distance, "↓", "Behind"
+    elseif angle >= -157.5 and angle < -112.5 then
+        return distance, "↙", "Back Left"
+    elseif angle >= -112.5 and angle < -67.5 then
+        return distance, "←", "Left"
     else
-        NPCAction.Text = "AUTO BATCH SENT  •  NEXT RESTOCK CYCLE"
-        addLog("Automatic NPC batch finished: " .. sent .. " / " .. #ammoList .. " RemoteEvent calls fired (server purchase not confirmed)", "NPC")
+        return distance, "↖", "Front Left"
     end
-
-    NPCBuying = false
-    return true
 end
 
--- NPC timer is stored as a deadline, not read repeatedly from a possibly
--- hidden/frozen trader TextLabel. GetServerTimeNow is synchronized to the server.
-local NPCDeadline = nil
-local NPCTriggerPending = false
-local NPCCountdownThreadRunning = false
-local NPCLastSyncedText = "Not synced"
+local function formatDistance(distance)
+    if not distance then return "N/A" end
 
-local function npcClock()
-    local ok, value = pcall(function()
-        return workspace:GetServerTimeNow()
+    return string.format("%.0f studs", distance)
+end
+
+local function isInRange(distance)
+    if Settings.UnlimitedDistance then
+        return true
+    end
+
+    return distance ~= nil
+        and distance <= Settings.MaxDistance
+end
+
+local function clearVehicleRows()
+    for _, parent in ipairs({vehicleList, compactCombinedList, compactCarColumn}) do
+        for _, child in ipairs(parent:GetChildren()) do
+            if child.Name == "VehicleRow" or child.Name == "EmptyLabel" then child:Destroy() end
+        end
+    end
+    vehicleRows = {}
+end
+
+local function createVehicleRow(data, order)
+    local key = data.name
+    local isFavorite = favoriteVehicles[key] == true
+    local isIgnored = ignoredVehicles[key] == true
+
+    local row = button(minimized and compactCarColumn or vehicleList, "", isIgnored and Color3.fromRGB(45, 35, 35) or Theme.Surface)
+    row.Name = "VehicleRow"
+    row.Size = UDim2.new(1, -3, 0, minimized and 30 or 43)
+    row.LayoutOrder = order
+    row.Text = ""
+
+    local nameLabel = text(row, (isFavorite and "★ " or "") .. data.name .. (isIgnored and "  [IGNORED]" or ""), 11, isIgnored and Theme.Muted or Theme.Text, true)
+    nameLabel.Position = UDim2.new(0, 8, 0, minimized and 1 or 5)
+    nameLabel.Size = UDim2.new(0.39, -4, 1, minimized and -2 or -10)
+
+    local infoLabel = text(row, "...", 9, Theme.Accent, true)
+    infoLabel.Position = UDim2.new(0.40, 0, 0, minimized and 1 or 5)
+    infoLabel.Size = UDim2.new(0.27, 0, 1, minimized and -2 or -10)
+    infoLabel.TextXAlignment = Enum.TextXAlignment.Right
+
+    local favoriteButton = button(row, isFavorite and "★" or "☆", isFavorite and Color3.fromRGB(145, 110, 25) or Theme.Border)
+    favoriteButton.Position = UDim2.new(1, -66, 0, 7)
+    favoriteButton.Size = UDim2.new(0, 28, 0, 29)
+    favoriteButton.TextSize = 15
+    local ignoreButton = button(row, isIgnored and "↶" or "⊘", isIgnored and Theme.Accent or Theme.Border)
+    ignoreButton.Position = UDim2.new(1, -34, 0, 7)
+    ignoreButton.Size = UDim2.new(0, 28, 0, 29)
+    ignoreButton.TextSize = 14
+
+    vehicleRows[data.model] = {button = row, nameLabel = nameLabel, infoLabel = infoLabel, name = data.name}
+
+    row.MouseButton1Click:Connect(function()
+        if ignoredVehicles[key] then return end
+        if selectedVehicle == data.model then selectedVehicle = nil else selectedVehicle = data.model end
     end)
-    if ok and type(value) == "number" then
-        return value
-    end
-    return os.clock()
+    favoriteButton.MouseButton1Click:Connect(function()
+        favoriteVehicles[key] = not favoriteVehicles[key] or nil
+        saveVehicleLists()
+        scanVehicles()
+    end)
+    ignoreButton.MouseButton1Click:Connect(function()
+        ignoredVehicles[key] = not ignoredVehicles[key] or nil
+        if ignoredVehicles[key] and selectedVehicle == data.model then
+            selectedVehicle = nil
+        end
+        saveVehicleLists()
+        refreshIgnoreList()
+        scanVehicles()
+        updateTracking()
+    end)
 end
 
-local function updateNPCCountdownDisplay(remaining)
-    remaining = math.max(0, math.floor(remaining))
-    if NPCTimer then
-        NPCTimer.Text = "NEXT BUY IN  " .. formatTime(remaining)
+local function renderVehicles()
+    clearVehicleRows()
+    compactCount.Text = string.format("%d cars  •  %d bosses", #vehicles, #bosses)
+
+    for index, data in ipairs(vehicles) do
+        createVehicleRow(data, index)
     end
-    if NPCSeconds then
-        NPCSeconds.Text = tostring(remaining) .. " seconds remaining"
+
+    if #vehicles == 0 then
+        local empty = text(
+            minimized and compactCarColumn or vehicleList,
+            "No vehicles within scan range",
+            11, Theme.Muted
+        )
+
+        empty.Name = "EmptyLabel"
+        empty.Size = UDim2.new(1, 0, 0, 35)
+        empty.TextXAlignment = Enum.TextXAlignment.Center
+    end
+
+    local favorites, ignored = 0, 0
+    for _, data in ipairs(vehicles) do
+        if favoriteVehicles[data.name] then favorites += 1 end
+        if ignoredVehicles[data.name] then ignored += 1 end
+    end
+    vehicleCount.Text = string.format("%d cars  •  ★ %d  •  ignored %d", #vehicles, favorites, ignored)
+end
+
+scanVehicles = function()
+    if not running then return end
+
+    local folder = getVehicleFolder()
+
+    if not folder then
+        vehicles = {}
+
+        liveStatus.Text = "● WAITING FOR RAID"
+        liveStatus.TextColor3 = Theme.Muted
+
+        renderVehicles()
+        return
+    end
+
+    local results = {}
+
+    for _, model in ipairs(folder:GetChildren()) do
+        local vehType = model:GetAttribute("VehType")
+        local name = model.Name
+
+        if type(vehType) == "string" and vehType ~= "" then
+            name = vehType
+        end
+
+        local distance = getTrackingInfo(model)
+
+        -- In minimized mode, hide ignored vehicle types from the search results.
+        -- In expanded mode they remain visible so they can be restored with the undo button.
+        local isIgnored = ignoredVehicles[name] == true
+        if isInRange(distance) and not isIgnored then
+            if not seenVehicleModels[model] then
+                showDetectionNotification("CAR", name)
+            end
+            seenVehicleModels[model] = true
+            table.insert(results, {
+                model = model,
+                name = name,
+                distance = distance or math.huge
+            })
+        end
+    end
+
+    table.sort(results, function(a, b)
+        local af, bf = favoriteVehicles[a.name] == true, favoriteVehicles[b.name] == true
+        if af ~= bf then return af end
+        return a.distance < b.distance
+    end)
+
+    local currentVehicleModels = {}
+    for _, entry in ipairs(results) do currentVehicleModels[entry.model] = true end
+    for model in pairs(seenVehicleModels) do
+        if not model or not model.Parent or not currentVehicleModels[model] then
+            seenVehicleModels[model] = nil
+        end
+    end
+    vehicles = results
+
+    liveStatus.Text = "● LIVE TRACKING"
+    liveStatus.TextColor3 = Theme.Accent
+
+    renderVehicles()
+end
+
+-- Boss scanner: detects any child whose name begins with "boss_".
+local function getBossFolder()
+    local hushLocal = workspace:FindFirstChild("HushLocal")
+    local zombieFolder = hushLocal and hushLocal:FindFirstChild("Zombies")
+    return zombieFolder
+end
+
+local function clearBossRows()
+    for _, parent in ipairs({bossList, compactCombinedList, compactBossColumn}) do
+        for _, child in ipairs(parent:GetChildren()) do
+            if child.Name == "BossRow" or child.Name == "BossEmptyLabel" then child:Destroy() end
+        end
+    end
+    bossRows = {}
+end
+
+local function scanBosses()
+    if not running then return end
+    local folder = getBossFolder()
+    local found = {}
+    if folder then
+        for _, model in ipairs(folder:GetChildren()) do
+            if string.sub(string.lower(model.Name), 1, 5) == "boss_" then
+                if not seenBossModels[model] then
+                    showDetectionNotification("BOSS", model.Name)
+                end
+                seenBossModels[model] = true
+                local distance, arrow, direction = getTrackingInfo(model)
+                table.insert(found, {model = model, name = model.Name, distance = distance or math.huge, arrow = arrow, direction = direction})
+            end
+        end
+    end
+    local currentBossModels = {}
+    for _, entry in ipairs(found) do currentBossModels[entry.model] = true end
+    for model in pairs(seenBossModels) do
+        if not model or not model.Parent or not currentBossModels[model] then
+            seenBossModels[model] = nil
+        end
+    end
+    table.sort(found, function(a, b) return a.distance < b.distance end)
+    bosses = found
+    compactCount.Text = string.format("%d cars  •  %d bosses", #vehicles, #bosses)
+    clearBossRows()
+    for index, data in ipairs(bosses) do
+        local row = button(minimized and compactBossColumn or bossList, "", data.model == selectedBoss and Theme.Selected or Theme.Surface)
+        row.Name = "BossRow"
+        row.Size = UDim2.new(1, -3, 0, minimized and 28 or 38)
+        row.LayoutOrder = index
+        row.Text = ""
+        local nameLabel = text(row, data.name, 11, Theme.Text, true)
+        nameLabel.Position = UDim2.new(0, 9, 0, 3)
+        nameLabel.Size = UDim2.new(0.55, 0, 1, -6)
+        local infoLabel = text(row, string.format("%s %.0f", data.arrow or "?", data.distance), 10, Theme.Accent, true)
+        infoLabel.Position = UDim2.new(0.56, 0, 0, 3)
+        infoLabel.Size = UDim2.new(0.41, -8, 1, -6)
+        infoLabel.TextXAlignment = Enum.TextXAlignment.Right
+        bossRows[data.model] = row
+        row.MouseButton1Click:Connect(function()
+            selectedBoss = selectedBoss == data.model and nil or data.model
+            scanBosses()
+        end)
+    end
+    if #bosses == 0 then
+        local empty = text(minimized and compactBossColumn or bossList, folder and "No boss detected" or "Waiting for HushLocal.Zombies", 10, Theme.Muted)
+        empty.Name = "BossEmptyLabel"
+        empty.Size = UDim2.new(1, 0, 0, 34)
+        empty.TextXAlignment = Enum.TextXAlignment.Center
+    end
+    bossCount.Text = tostring(#bosses) .. " bosses detected"
+    if selectedBoss and not selectedBoss.Parent then selectedBoss = nil end
+end
+
+local function updateSelectedVehicleLine()
+    if not selectedVehicle or not selectedVehicle.Parent then
+        targetTracer.Visible = false
+        targetTracerDot.Visible = false
+        vehicleWaypoint.Visible = false
+        return
+    end
+
+    local worldPosition = getVehiclePosition(selectedVehicle)
+    local camera = workspace.CurrentCamera
+    local characterRoot = getRoot()
+
+    if not worldPosition or not camera or not characterRoot then
+        targetTracer.Visible = false
+        targetTracerDot.Visible = false
+        vehicleWaypoint.Visible = false
+        return
+    end
+
+    -- Project the actual player character and selected vehicle into screen space.
+    local playerScreen, playerOnScreen =
+        camera:WorldToViewportPoint(characterRoot.Position)
+    local vehicleScreen, vehicleOnScreen =
+        camera:WorldToViewportPoint(worldPosition)
+
+    local viewport = camera.ViewportSize
+    local distance = getTrackingInfo(selectedVehicle)
+    local vehicleType = selectedVehicle:GetAttribute("VehType")
+    local vehicleName = type(vehicleType) == "string"
+        and vehicleType ~= "" and vehicleType
+        or selectedVehicle.Name
+
+    waypointText.Text = string.format(
+        "%s  •  %.0f studs",
+        vehicleName,
+        distance or 0
+    )
+
+    -- Keep a waypoint visible at the vehicle's screen position. If the car
+    -- is outside the view, clamp the marker to the nearest screen edge.
+    local markerX = vehicleScreen.X
+    local markerY = vehicleScreen.Y
+    if vehicleScreen.Z <= 0 then
+        markerX = viewport.X - markerX
+        markerY = viewport.Y - markerY
+    end
+
+    local marginX = vehicleWaypoint.AbsoluteSize.X * 0.5 + 8
+    local marginY = vehicleWaypoint.AbsoluteSize.Y + 8
+    markerX = math.clamp(markerX, marginX, viewport.X - marginX)
+    markerY = math.clamp(markerY, marginY, viewport.Y - 8)
+
+    vehicleWaypoint.Position = UDim2.fromOffset(markerX, markerY)
+    vehicleWaypoint.Visible = true
+
+    if not playerOnScreen or not vehicleOnScreen
+        or playerScreen.Z <= 0 or vehicleScreen.Z <= 0
+        or playerScreen.X < 0 or playerScreen.X > viewport.X
+        or playerScreen.Y < 0 or playerScreen.Y > viewport.Y
+        or vehicleScreen.X < 0 or vehicleScreen.X > viewport.X
+        or vehicleScreen.Y < 0 or vehicleScreen.Y > viewport.Y then
+        targetTracer.Visible = false
+        targetTracerDot.Visible = false
+        return
+    end
+
+    -- Draw directly from the player's on-screen position to the car.
+    local startX = playerScreen.X
+    local startY = playerScreen.Y
+    local endX = vehicleScreen.X
+    local endY = vehicleScreen.Y
+    local dx = endX - startX
+    local dy = endY - startY
+    local length = math.sqrt(dx * dx + dy * dy)
+
+    -- Roblox rotates GuiObjects around their center. Place the line's
+    -- center at the midpoint so both endpoints land on the projected points.
+    local midX = (startX + endX) * 0.5
+    local midY = (startY + endY) * 0.5
+
+    targetTracer.Position = UDim2.fromOffset(midX, midY)
+    targetTracer.Size = UDim2.fromOffset(length, 3)
+    targetTracer.Rotation = math.deg(math.atan2(dy, dx))
+    targetTracer.Visible = true
+
+    targetTracerDot.Position = UDim2.fromOffset(endX, endY)
+    targetTracerDot.Visible = true
+end
+
+local function updateTracking()
+    if not running then return end
+
+    for model, row in pairs(vehicleRows) do
+        if model and model.Parent and row.button.Parent then
+            local distance, arrow, direction =
+                getTrackingInfo(model)
+
+            row.infoLabel.Text =
+                arrow .. " " .. formatDistance(distance)
+
+            row.button.BackgroundColor3 =
+                model == selectedVehicle
+                and Theme.Selected
+                or Theme.Surface
+        end
+    end
+
+    if selectedVehicle and selectedVehicle.Parent then
+        local distance, arrow, direction =
+            getTrackingInfo(selectedVehicle)
+
+        local vehType =
+            selectedVehicle:GetAttribute("VehType")
+
+        targetName.Text =
+            type(vehType) == "string" and vehType ~= ""
+            and vehType
+            or selectedVehicle.Name
+
+        targetDistance.Text =
+            arrow .. " " .. direction ..
+            "  |  " .. formatDistance(distance)
+    else
+        selectedVehicle = nil
+
+        targetName.Text = "No vehicle selected"
+        targetDistance.Text = "Tap a vehicle to track"
+    end
+
+    updateSelectedVehicleLine()
+end
+
+--========================================================
+-- MINIMIZE / CLOSE
+--========================================================
+
+-- Compact mode: show cars and bosses together in one list.
+local function setCompactVehicleList(enabled)
+    minimized = enabled
+    if enabled then
+        sidebar.Visible = false
+        content.Position = UDim2.new(0, 0, 0, 0)
+        content.Size = UDim2.new(1, 0, 1, 0)
+        for pageName, page in pairs(pages) do page.Visible = pageName == "Tracker" end
+        trackerTitle.Visible = false
+        trackerSubtitle.Visible = false
+        liveStatus.Visible = false
+        targetPanel.Visible = false
+        listTitle.Visible = false
+        vehicleESPToggle.Visible = false
+        compactTabs.Visible = false
+        vehicleCount.Visible = false
+        bossCount.Visible = false
+        compactCount.Visible = true
+        compactCombinedList.Visible = false
+        compactBossTitle.Visible = true
+        compactCarTitle.Visible = true
+        compactBossColumn.Visible = true
+        compactCarColumn.Visible = true
+        vehicleList.Visible = false
+        bossList.Visible = false
+        sidebar.Visible = false
+        body.Position = UDim2.new(0, 0, 0, 28)
+        body.Size = UDim2.new(1, 0, 1, -28)
+        content.Position = UDim2.new(0, 0, 0, 0)
+        content.Size = UDim2.new(1, 0, 1, 0)
+        -- Compact HUD-style panel: slightly inset from the upper-left.
+        main.AnchorPoint = Vector2.new(0, 0)
+        main.Position = UDim2.new(0, 330, 0, 8)
+        main.Size = UDim2.new(0, 500, 0, 190)
+        header.Size = UDim2.new(1, 0, 0, 28)
+        logo.Visible = false
+        version.Visible = false
+        minimize.Position = UDim2.new(1, -54, 0, 3)
+        minimize.Size = UDim2.new(0, 22, 0, 22)
+        close.Position = UDim2.new(1, -28, 0, 3)
+        close.Size = UDim2.new(0, 22, 0, 22)
+        compactCount.Position = UDim2.new(0, 10, 0, 1)
+        compactCount.Size = UDim2.new(1, -20, 0, 15)
+        compactBossTitle.Position = UDim2.new(0, 10, 0, 20)
+        compactBossTitle.Size = UDim2.new(0.5, -15, 0, 14)
+        compactCarTitle.Position = UDim2.new(0.5, 5, 0, 20)
+        compactCarTitle.Size = UDim2.new(0.5, -15, 0, 14)
+        compactBossColumn.Position = UDim2.new(0, 8, 0, 37)
+        compactBossColumn.Size = UDim2.new(0.5, -12, 1, -42)
+        compactCarColumn.Position = UDim2.new(0.5, 4, 0, 37)
+        compactCarColumn.Size = UDim2.new(0.5, -12, 1, -42)
+        minimize.Text = "+"
+        scanVehicles()
+        scanBosses()
+    else
+        sidebar.Visible = true
+        body.Position = UDim2.new(0, 0, 0, 46)
+        body.Size = UDim2.new(1, 0, 1, -46)
+        content.Position = UDim2.new(0, 155, 0, 0)
+        content.Size = UDim2.new(1, -155, 1, 0)
+        main.AnchorPoint = Vector2.new(0, 0)
+        main.Position = UDim2.new(0.5, -290, 0.5, -195)
+        main.Size = UDim2.new(0, 580, 0, 390)
+        header.Size = UDim2.new(1, 0, 0, 46)
+        logo.Visible = true
+        version.Visible = true
+        minimize.Position = UDim2.new(1, -76, 0, 9)
+        minimize.Size = UDim2.new(0, 29, 0, 28)
+        close.Position = UDim2.new(1, -40, 0, 9)
+        close.Size = UDim2.new(0, 29, 0, 28)
+        compactCount.Position = UDim2.new(0, 12, 0, 36)
+        compactCount.Size = UDim2.new(1, -24, 0, 20)
+        compactCombinedList.Position = UDim2.new(0, 10, 0, 60)
+        compactCombinedList.Size = UDim2.new(1, -20, 1, -70)
+        compactBossColumn.Position = UDim2.new(0, 8, 0, 37)
+        compactBossColumn.Size = UDim2.new(0.5, -12, 1, -42)
+        compactCarColumn.Position = UDim2.new(0.5, 4, 0, 37)
+        compactCarColumn.Size = UDim2.new(0.5, -12, 1, -42)
+        sidebar.Visible = true
+        content.Position = UDim2.new(0, 155, 0, 0)
+        content.Size = UDim2.new(1, -155, 1, 0)
+        trackerTitle.Visible = true
+        trackerSubtitle.Visible = true
+        liveStatus.Visible = true
+        targetPanel.Visible = true
+        listTitle.Visible = true
+        vehicleESPToggle.Visible = true
+        compactTabs.Visible = false
+        compactCount.Visible = false
+        compactCombinedList.Visible = false
+        compactBossTitle.Visible = false
+        compactCarTitle.Visible = false
+        compactBossColumn.Visible = false
+        compactCarColumn.Visible = false
+        vehicleList.Visible = true
+        bossList.Visible = false
+        bossCount.Visible = false
+        vehicleCount.Visible = true
+        vehicleCount.Position = UDim2.new(1, -145, 0, 60)
+        vehicleCount.Size = UDim2.new(0, 125, 0, 22)
+        vehicleCount.TextXAlignment = Enum.TextXAlignment.Right
+        vehicleList.Position = UDim2.new(0, 16, 0, 196)
+        vehicleList.Size = UDim2.new(1, -32, 1, -204)
+        showPage("Tracker")
+        minimize.Text = "—"
+        scanVehicles()
+        scanBosses()
     end
 end
 
-syncNPCFromGameLabel = function()
-    local remaining, raw = getNPCText()
-    if remaining == nil then
-        if NPCSource then
-            NPCSource.Text = "SOURCE  Live timer not found — open NPC trader"
+minimize.MouseButton1Click:Connect(function()
+    setCompactVehicleList(not minimized)
+end)
+
+-- Right Shift toggles compact/minimized mode.
+UIS.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed or not running then return end
+    if input.KeyCode == Enum.KeyCode.RightShift then
+        setCompactVehicleList(not minimized)
+    end
+end)
+
+-- CLEANUP
+--========================================================
+
+local function cleanup()
+    if not running then return end
+
+    running = false
+    zombieESPEnabled = false
+    vehicleESPEnabled = false
+    militaryMapEnabled = false
+
+    clearMilitaryMapHighlight()
+    clearZombieESP()
+    clearVehicleESP()
+    if cordonMapDraw and originalCordonFogRects then
+        fullMapRevealEnabled = false
+        pcall(function()
+            cordonMapDraw.fogRects = originalCordonFogRects
+        end)
+        pcall(repaintCordonFog)
+    end
+    targetTracer.Visible = false
+    targetTracerDot.Visible = false
+    vehicleWaypoint.Visible = false
+    targetTracer:Destroy()
+    targetTracerDot:Destroy()
+    vehicleWaypoint:Destroy()
+
+    for _, conn in ipairs(connections) do
+        pcall(function()
+            conn:Disconnect()
+        end)
+    end
+
+    gui:Destroy()
+end
+
+_G.VezaStop = cleanup
+
+-- Persist the current state before the UI is closed.
+local originalCleanup = cleanup
+cleanup = function()
+    if RememberSettings then
+        saveConfig()
+    end
+    saveVehicleLists()
+    restoreCameraZoom()
+    originalCleanup()
+end
+_G.VezaStop = cleanup
+close.MouseButton1Click:Connect(cleanup)
+
+--========================================================
+-- PAGE 7: CORDON FULL MAP REVEAL (LOCAL VISUAL ONLY)
+--========================================================
+
+local mapRevealPage = registerPage("MapReveal", "Map Reveal", 7)
+local mapRevealTitle = text(mapRevealPage, "Cordon Map Reveal", 16, Theme.Text, true)
+mapRevealTitle.Position = UDim2.new(0, 16, 0, 12)
+mapRevealTitle.Size = UDim2.new(1, -32, 0, 25)
+
+local mapRevealSubtitle = text(
+    mapRevealPage,
+    "Remove the minimap fog layer locally",
+    10, Theme.Muted
+)
+mapRevealSubtitle.Position = UDim2.new(0, 16, 0, 37)
+mapRevealSubtitle.Size = UDim2.new(1, -32, 0, 20)
+
+local mapRevealPanel = create("Frame", {
+    Size = UDim2.new(1, -32, 0, 94),
+    Position = UDim2.new(0, 16, 0, 72),
+    BackgroundColor3 = Theme.Surface,
+    BackgroundTransparency = 0.16,
+    BorderSizePixel = 0
+}, mapRevealPage)
+round(mapRevealPanel, 7)
+
+local mapRevealOption = text(
+    mapRevealPanel, "FULL MAP REVEAL",
+    12, Theme.Text, true
+)
+mapRevealOption.Position = UDim2.new(0, 12, 0, 10)
+mapRevealOption.Size = UDim2.new(0.65, 0, 0, 22)
+
+local mapRevealDescription = text(
+    mapRevealPanel,
+    "Shows all map areas available in the client extract",
+    9, Theme.Muted
+)
+mapRevealDescription.Position = UDim2.new(0, 12, 0, 35)
+mapRevealDescription.Size = UDim2.new(0.68, 0, 0, 30)
+mapRevealDescription.TextWrapped = true
+
+local mapRevealToggle = button(mapRevealPanel, "ON", Theme.Accent)
+mapRevealToggle.Position = UDim2.new(1, -76, 0, 27)
+mapRevealToggle.Size = UDim2.new(0, 62, 0, 32)
+
+local mapRevealStatus = text(
+    mapRevealPage, "STATUS: WAITING FOR CORDON MAP MODULE",
+    10, Theme.Muted, true
+)
+mapRevealStatus.Position = UDim2.new(0, 16, 0, 182)
+mapRevealStatus.Size = UDim2.new(1, -32, 0, 24)
+
+local mapRevealInfo = text(
+    mapRevealPage,
+    "Client-side visual only. Does not modify server exploration progress or reveal data that is not included in the public map extract.",
+    10, Theme.Muted
+)
+mapRevealInfo.Position = UDim2.new(0, 16, 0, 211)
+mapRevealInfo.Size = UDim2.new(1, -32, 0, 58)
+mapRevealInfo.TextWrapped = true
+
+-- Enabled by default each time VEZA starts.
+local fullMapRevealEnabled = true
+local cordonMapDraw = nil
+local originalCordonFogRects = nil
+
+local function findCordonMapDraw()
+    if cordonMapDraw
+        and type(cordonMapDraw.fogRects) == "function"
+        and type(cordonMapDraw.fogState) == "function"
+        and type(cordonMapDraw.see) == "function" then
+        return cordonMapDraw
+    end
+
+    if type(getgc) ~= "function" then
+        return nil, "GETGC UNAVAILABLE"
+    end
+
+    local ok, objects = pcall(getgc, true)
+    if not ok or type(objects) ~= "table" then
+        return nil, "CANNOT READ CLIENT TABLES"
+    end
+
+    for _, object in ipairs(objects) do
+        if type(object) == "table"
+            and object.FOG_MAX == 320
+            and object.SIGHT == 160
+            and type(object.extract) == "function"
+            and type(object.fogRects) == "function"
+            and type(object.fogState) == "function"
+            and type(object.see) == "function" then
+            cordonMapDraw = object
+            originalCordonFogRects = object._VEZA_OriginalFogRects or object.fogRects
+            pcall(function()
+                object._VEZA_OriginalFogRects = originalCordonFogRects
+            end)
+            return object
         end
-        if NPCAction then
-            NPCAction.Text = "WAITING FOR GAME TIMER"
+    end
+
+    return nil, "WAITING FOR CORDON MAP DRAW"
+end
+
+local function repaintCordonFog()
+    local module = cordonMapDraw
+    if not module then return false end
+
+    local ok, result = pcall(function()
+        local extract = module.extract()
+        if type(extract) ~= "table" then return false end
+        local mask = module.fogState()
+        if type(mask) ~= "table" then return false end
+
+        local character = Player.Character
+        local root = character and character:FindFirstChild("HumanoidRootPart")
+        if not root or not root:IsA("BasePart") then return false end
+
+        local chunk = (type(extract.chunk) == "number" and extract.chunk > 0)
+            and extract.chunk or 128
+        local half = extract.size * chunk / 2
+        local col = math.clamp(math.floor((root.Position.X + half) / chunk), 0, extract.size - 1)
+        local row = math.clamp(math.floor((root.Position.Z + half) / chunk), 0, extract.size - 1)
+        local index = row * extract.size + col
+
+        -- Clear and immediately re-see the player's current cell. This forces
+        -- the module's own paintFog() routine to redraw using the selected mode.
+        if mask[index] then
+            mask[index] = nil
         end
+        module.see(root.Position.X, root.Position.Z)
+        return true
+    end)
+
+    return ok and result == true
+end
+
+local function applyCordonFogMode()
+    local module, reason = findCordonMapDraw()
+    if not module then
+        mapRevealStatus.Text = "STATUS: " .. tostring(reason)
+        mapRevealStatus.TextColor3 = Theme.Muted
         return false
     end
 
-    NPCDeadline = npcClock() + remaining
-    NPCLastSyncedText = tostring(raw)
-    NPCTriggerPending = false
+    local original = originalCordonFogRects or module._VEZA_OriginalFogRects
+        or module.fogRects
+    originalCordonFogRects = original
+    pcall(function()
+        module._VEZA_OriginalFogRects = original
+    end)
 
-    updateNPCCountdownDisplay(remaining)
-
-    if NPCSource then
-        NPCSource.Text = "SYNCED FROM GAME  •  " .. NPCLastSyncedText
+    local patchOK, patchError = pcall(function()
+        if fullMapRevealEnabled then
+            module.fogRects = function()
+                return {}, 0
+            end
+        else
+            module.fogRects = original
+        end
+    end)
+    if not patchOK then
+        mapRevealStatus.Text = "STATUS: FOG HOOK BLOCKED"
+        mapRevealStatus.TextColor3 = Theme.Red
+        warn("[VEZA] Cordon fog hook failed: " .. tostring(patchError))
+        return false
     end
-    if NPCAction then
-        NPCAction.Text = "LOCAL 15-MINUTE TIMER"
-    end
 
-    addLog("NPC timer reference: " .. NPCLastSyncedText, "NPC")
+    repaintCordonFog()
+    mapRevealStatus.Text = fullMapRevealEnabled
+        and "STATUS: FULL MAP REVEAL ACTIVE"
+        or "STATUS: NORMAL FOG RESTORED"
+    mapRevealStatus.TextColor3 = fullMapRevealEnabled and Theme.Accent or Theme.Muted
     return true
 end
 
-local function startNPCMonitor()
-    if NPCMonitoring then return end
+local function updateMapRevealToggle()
+    mapRevealToggle.Text = fullMapRevealEnabled and "ON" or "OFF"
+    mapRevealToggle.BackgroundColor3 = fullMapRevealEnabled and Theme.Accent or Theme.Border
+end
 
-    NPCMonitoring = true
-    NPCStatus.Text = "MONITORING"
-    NPCStatus.TextColor3 = COLORS.green
-    addLog("NPC 15-minute auto-buy monitor started", "NPC")
-
-    -- Always begin with a fresh local 15-minute interval.
-    -- The in-game "Restock in" label is intentionally not used.
-    NPCDeadline = npcClock() + 900
-    NPCLastSyncedText = "Local 15:00 interval"
-    updateNPCCountdownDisplay(900)
-    if NPCSource then
-        NPCSource.Text = "SOURCE  LOCAL 15-MINUTE INTERVAL"
+mapRevealToggle.MouseButton1Click:Connect(function()
+    fullMapRevealEnabled = not fullMapRevealEnabled
+    updateMapRevealToggle()
+    if not applyCordonFogMode() then
+        mapRevealStatus.Text = fullMapRevealEnabled
+            and "STATUS: ENABLED — WAITING FOR MAP"
+            or "STATUS: DISABLED — WAITING FOR MAP"
     end
-    NPCAction.Text = "NEXT AUTOMATIC BUY IN 15:00"
+end)
 
-    if NPCCountdownThreadRunning then return end
-    NPCCountdownThreadRunning = true
+--========================================================
+-- BACKGROUND LOOPS
+--========================================================
 
+-- Force Day + No Snow: retry until the game's Atmosphere controller exists.
+task.spawn(function()
+    while running and gui.Parent do
+        if forceDayNoSnowEnabled then
+            applyDayNoSnow()
+        end
+        task.wait(2)
+    end
+end)
+
+-- Cordon fog hook: retry until the map module is loaded, then keep the
+-- selected local fog mode applied if the game rebuilds its map module.
+updateMapRevealToggle()
+task.spawn(function()
+    local lastModule = nil
+    while running and gui.Parent do
+        local module = findCordonMapDraw()
+        if module then
+            if module ~= lastModule then
+                lastModule = module
+                applyCordonFogMode()
+            elseif fullMapRevealEnabled and module.fogRects ~= nil
+                and module.fogRects == originalCordonFogRects then
+                -- Re-apply if another local script restored the original function.
+                applyCordonFogMode()
+            end
+        end
+        task.wait(1)
+    end
+end)
+
+-- Vehicle list scan
+task.spawn(function()
+    while running and gui.Parent do
+        scanVehicles()
+        task.wait(Settings.ScanInterval)
+    end
+end)
+
+-- Boss scanner refresh
+task.spawn(function()
+    while running and gui.Parent do
+        scanBosses()
+        task.wait(Settings.ScanInterval)
+    end
+end)
+
+-- Vehicle distance and direction updates
+task.spawn(function()
+    while running and gui.Parent do
+        updateTracking()
+        task.wait(Settings.UpdateInterval)
+    end
+end)
+
+-- Vehicle ESP scan
+task.spawn(function()
+    while running and gui.Parent do
+        if vehicleESPEnabled then
+            scanVehicleESP()
+        end
+        task.wait(Settings.ScanInterval)
+    end
+end)
+
+-- Military map highlight refresh
+task.spawn(function()
+    while running and gui.Parent do
+        if militaryMapEnabled then
+            scanMilitaryMap()
+        end
+        task.wait(1)
+    end
+end)
+
+-- Zombie ESP scan
+task.spawn(function()
+    while running and gui.Parent do
+        if zombieESPEnabled then
+            scanZombies()
+        end
+
+        task.wait(Settings.ZombieScanInterval)
+    end
+end)
+
+--========================================================
+-- INITIALIZE
+--========================================================
+
+updateSlider()
+updateUnlimited()
+updateRememberUI()
+updateZoomUI()
+updateZombieToggle()
+updateVehicleToggle()
+updateMilitaryToggle()
+updateEnvironmentToggle()
+
+showPage("Tracker")
+if RememberSettings then
+    saveConfig()
+end
+
+if ZoomEnabled then
     task.spawn(function()
-        while NPCMonitoring and ScreenGui and ScreenGui.Parent do
-            if NPCDeadline then
-                local remaining = math.max(0, math.ceil(NPCDeadline - npcClock()))
-                updateNPCCountdownDisplay(remaining)
-
-                if remaining <= 0 and not NPCTriggerPending and not NPCBuying then
-                    NPCTriggerPending = true
-                    NPCAction.Text = "RESTOCK ZERO  •  WAITING 3 SECONDS"
-
-                    task.wait(CONFIG.NPCTriggerDelay)
-
-                    if not NPCMonitoring then
-                        NPCTriggerPending = false
-                        break
-                    end
-
-                    -- Re-check the deadline after the 3-second grace period.
-                    if NPCDeadline and npcClock() >= NPCDeadline then
-                        local autoBatchStarted = buyAllNPCAmmo(false)
-
-                        -- Reset only after the automatic batch actually ran.
-                        -- If a manual batch was in progress, leave the expired deadline
-                        -- intact so the monitor can retry as soon as the manual batch ends.
-                        if autoBatchStarted and NPCMonitoring then
-                            NPCDeadline = npcClock() + 900
-                            NPCLastSyncedText = "Local 15:00 cycle"
-                            updateNPCCountdownDisplay(900)
-                            NPCAction.Text = "BATCH SENT  •  NEXT CYCLE 15:00"
-                            NPCSource.Text = "SOURCE  LOCAL 15-MINUTE INTERVAL"
-                        end
-                    end
-
-                    NPCTriggerPending = false
-                end
-            else
-                NPCTimer.Text = "NEXT BUY IN  15:00"
-                NPCSeconds.Text = "15-minute automatic purchase interval"
-                NPCSource.Text = "SOURCE  LOCAL 15-MINUTE INTERVAL"
-                NPCAction.Text = "WAITING FOR MONITOR"
+        while running and gui.Parent do
+            if applyCameraZoom() then
+                preferenceStatus.Text = "Status: camera zoom patched"
+                break
             end
-
-            task.wait(0.2)
+            task.wait(1)
         end
-
-        NPCCountdownThreadRunning = false
     end)
 end
 
-local function stopNPCMonitor()
-    NPCMonitoring = false
-    NPCTriggerPending = false
-    NPCStatus.Text = "STOPPED"
-    NPCStatus.TextColor3 = COLORS.orange
-    NPCAction.Text = "MONITOR STOPPED"
-    addLog("NPC restock monitor stopped", "NPC")
-end
-
---==================================================
--- GUI ROOT / DESKTOP LAYOUT
---==================================================
-
-local old = PlayerGui:FindFirstChild("HushControlCenter")
-if old then old:Destroy() end
-
-ScreenGui = make("ScreenGui", {
-    Name="HushControlCenter", ResetOnSpawn=false,
-    IgnoreGuiInset=true, DisplayOrder=999999,
-    ZIndexBehavior=Enum.ZIndexBehavior.Sibling,
-}, PlayerGui)
-
-local Main = make("Frame", {
-    Name="Main", Size=UDim2.fromOffset(380, 58),
-    Position=UDim2.new(0.5,-190,0.5,-29),
-    BackgroundColor3=COLORS.bg, BorderSizePixel=0,
-}, ScreenGui)
-Main:SetAttribute("Minimized", true)
-addCorner(Main, 14)
-addStroke(Main, COLORS.border, 1)
-
--- Compact scaling for phones; desktop/tablet keeps the original dimensions.
-local MobileScale = make("UIScale", {
-    Scale = UserInputService.TouchEnabled and 0.78 or 1,
-}, Main)
-
-local Top = make("Frame", {
-    Size=UDim2.new(1,0,0,58), BackgroundColor3=COLORS.panel,
-    BorderSizePixel=0,
-}, Main)
-addCorner(Top, 14)
-
-local Brand = label(Top, "HUSH CONTROL", 15, COLORS.text, true)
-Brand.Position = UDim2.fromOffset(12, 5)
-Brand.Size = UDim2.new(0, 220, 0, 24)
-
-local BrandSub = label(Top, "MARKET  •  NPC AUTOMATION", 9, COLORS.muted, false)
-BrandSub.Position = UDim2.fromOffset(13, 30)
-BrandSub.Size = UDim2.new(0, 220, 0, 16)
-
-local WindowStatus = label(Top, "● READY", 9, COLORS.green, true)
-WindowStatus.Position = UDim2.new(1,-170,0,17)
-WindowStatus.Size = UDim2.fromOffset(42,20)
-WindowStatus.Text = "●"
-WindowStatus.TextXAlignment = Enum.TextXAlignment.Right
-
-local Body -- forward declaration for the minimize callback
-local Minimize = button(Top, "+", function()
-    local minimized = not Main:GetAttribute("Minimized")
-    Main:SetAttribute("Minimized", minimized)
-    Main.Size = minimized and UDim2.fromOffset(380,58) or UDim2.fromOffset(380,700)
-    Body.Visible = not minimized
-    Minimize.Text = minimized and "+" or "—"
-end, COLORS.panel3, 34, 30)
-Minimize.Position = UDim2.new(1,-42,0,14)
-
--- Drag title bar
-local dragging, dragStart, startPos = false, nil, nil
-Top.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        dragging = true
-        dragStart = input.Position
-        startPos = Main.Position
-        input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then dragging = false end
-        end)
-    end
-end)
-UserInputService.InputChanged:Connect(function(input)
-    if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-        local delta = input.Position - dragStart
-        Main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset+delta.X, startPos.Y.Scale, startPos.Y.Offset+delta.Y)
-    end
-end)
-
-Body = make("Frame", {
-    BackgroundTransparency=1, Position=UDim2.fromOffset(8,66),
-    Size=UDim2.new(1,-16,1,-74), Visible=false,
-}, Main)
-
-local Tabs = make("Frame", {
-    BackgroundTransparency=1, Size=UDim2.new(1,0,0,38),
-}, Body)
-
-local function makeTab(text, x)
-    local b = button(Tabs, text, function() end, COLORS.panel2, 178, 36)
-    b.Position = UDim2.fromOffset(x,0)
-    b.TextSize = 10
-    return b
-end
-
-local MarketTab = makeTab("◈ MARKET SNIPER", 0)
-local NPCTab = makeTab("◉ NPC AUTO BUY", 186)
-
-local PageArea = make("Frame", {
-    BackgroundTransparency=1, Position=UDim2.fromOffset(0,46),
-    Size=UDim2.new(1,0,1,-46),
-}, Body)
-
-local MarketPage = make("ScrollingFrame", {
-    BackgroundTransparency=1, Size=UDim2.fromScale(1,1), Visible=true,
-    BorderSizePixel=0, ScrollBarThickness=4, ScrollBarImageColor3=COLORS.accent,
-    AutomaticCanvasSize=Enum.AutomaticSize.Y, CanvasSize=UDim2.new(0,0,0,0),
-}, PageArea)
-
-local NPCPage = make("ScrollingFrame", {
-    BackgroundTransparency=1, Size=UDim2.fromScale(1,1), Visible=false,
-    BorderSizePixel=0, ScrollBarThickness=4, ScrollBarImageColor3=COLORS.accent,
-    AutomaticCanvasSize=Enum.AutomaticSize.Y, CanvasSize=UDim2.new(0,0,0,0),
-}, PageArea)
-
-local syncNPCFromGameLabel -- assigned after NPC timer UI is created
-
-local function showTab(which)
-    local market = which == "MARKET"
-    MarketPage.Visible = market
-    NPCPage.Visible = not market
-    MarketTab.BackgroundColor3 = market and COLORS.accent or COLORS.panel2
-    NPCTab.BackgroundColor3 = market and COLORS.panel2 or COLORS.accent
-
-    -- Fetch the game's current timer only when entering the NPC tab.
-    if not market and syncNPCFromGameLabel then
-        syncNPCFromGameLabel()
-    end
-end
-MarketTab.Activated:Connect(function() showTab("MARKET") end)
-NPCTab.Activated:Connect(function() showTab("NPC") end)
-
---==================================================
--- MARKET PAGE UI — MOBILE PORTRAIT
---==================================================
-
-local MarketHeader = make("Frame", {
-    BackgroundColor3=COLORS.panel, Size=UDim2.new(1,-4,0,112),
-    Position=UDim2.fromOffset(2,2), BorderSizePixel=0,
-}, MarketPage)
-addCorner(MarketHeader, 10)
-
-local MarketTitle = label(MarketHeader, "MARKET SNIPER", 14, COLORS.text, true)
-MarketTitle.Position = UDim2.fromOffset(12,6)
-MarketTitle.Size = UDim2.fromOffset(180,20)
-
-MarketStatus = label(MarketHeader, "IDLE", 10, COLORS.orange, true)
-MarketStatus.Position = UDim2.fromOffset(12,29)
-MarketStatus.Size = UDim2.fromOffset(100,18)
-
-ScanCount = label(MarketHeader, "SCANS  0", 9, COLORS.muted, true)
-ScanCount.Position = UDim2.fromOffset(116,29)
-ScanCount.Size = UDim2.fromOffset(90,18)
-
-local ForceScan = button(MarketHeader, "SCAN NOW", function()
-    task.spawn(performMarketScan)
-end, COLORS.blue, 108, 30)
-ForceScan.Position = UDim2.fromOffset(10,66)
-
-local StartMarket = button(MarketHeader, "START", startMarketMonitor, COLORS.green, 104, 30)
-StartMarket.Position = UDim2.fromOffset(126,66)
-
-local StopMarket = button(MarketHeader, "STOP", stopMarketMonitor, COLORS.red, 104, 30)
-StopMarket.Position = UDim2.fromOffset(238,66)
-
-local Form = make("Frame", {
-    BackgroundColor3=COLORS.panel, Position=UDim2.fromOffset(2,122),
-    Size=UDim2.new(1,-4,0,208), BorderSizePixel=0,
-}, MarketPage)
-addCorner(Form, 9)
-
-local IdBox = textbox(Form, "Item ID", 340)
-IdBox.Position = UDim2.fromOffset(10,9)
-IdBox.Size = UDim2.new(1,-20,0,32)
-
-local NameBox = textbox(Form, "Display name (optional)", 340)
-NameBox.Position = UDim2.fromOffset(10,48)
-NameBox.Size = UDim2.new(1,-20,0,32)
-
-local PriceBox = textbox(Form, "Max price", 340)
-PriceBox.Position = UDim2.fromOffset(10,87)
-PriceBox.Size = UDim2.new(1,-20,0,32)
-
-local AddWatch = button(Form, "ADD / UPDATE ITEM", function()
-    local ok, err = pcall(function()
-        local id = tostring(IdBox.Text or ""):gsub("^%s+", ""):gsub("%s+$", "")
-        local name = tostring(NameBox.Text or ""):gsub("^%s+", ""):gsub("%s+$", "")
-        local priceText = tostring(PriceBox.Text or "")
-        local cleanedPrice = (priceText:gsub("[%$,]", ""):gsub("%s+", ""))
-        local price = tonumber(cleanedPrice)
-
-        if id == "" then
-            FormStatus.Text = "ERROR: Item ID required"
-            FormStatus.TextColor3 = COLORS.red
-            return
-        end
-        if not validItemId(id) then
-            FormStatus.Text = "ERROR: Invalid Item ID"
-            FormStatus.TextColor3 = COLORS.red
-            return
-        end
-        if not price or price <= 0 or price == math.huge then
-            FormStatus.Text = "ERROR: Enter a valid max price"
-            FormStatus.TextColor3 = COLORS.red
-            return
-        end
-
-        local item = findWatchItem(id)
-        local action
-        if item then
-            item.name = name ~= "" and name or item.name
-            item.maxPrice = price
-            item.enabled = true
-            action = "UPDATED"
-        else
-            table.insert(Watchlist, {
-                id=id, name=name ~= "" and name or id, maxPrice=price,
-                enabled=true, autoBuy=false, priority=false, lastBuyAttempt=0,
-            })
-            action = "ADDED"
-        end
-
-        Results[id] = nil
-        saveState()
-        refreshWatchlist()
-        FormStatus.Text = action .. "  •  " .. id .. "  •  $" .. formatNumber(price)
-        FormStatus.TextColor3 = COLORS.green
-        IdBox.Text, NameBox.Text, PriceBox.Text = "", "", ""
-        addLog(action .. " watchlist item: " .. id, "WATCHLIST")
-    end)
-    if not ok then
-        FormStatus.Text = "ERROR: " .. tostring(err)
-        FormStatus.TextColor3 = COLORS.red
-        warn("[HUSH CONTROL] Add/Update failed: " .. tostring(err))
-        addLog("Add/update callback error: " .. tostring(err), "ERROR")
-    end
-end, COLORS.accent, 160, 32)
-AddWatch.Position = UDim2.fromOffset(10,126)
-
-local DelayBox = textbox(Form, "Delay", 76)
-DelayBox.Position = UDim2.new(1,-164,0,126)
-DelayBox.Size = UDim2.fromOffset(70,32)
-DelayBox.Text = tostring(CONFIG.RequestDelay)
-
-local SaveDelay = button(Form, "SAVE", function()
-    local n = tonumber(DelayBox.Text)
-    if not n then addLog("Invalid scan delay", "WARNING"); return end
-    CONFIG.RequestDelay = math.clamp(n,0.1,60)
-    DelayBox.Text = tostring(CONFIG.RequestDelay)
-    saveState()
-    addLog("Scan delay set to " .. CONFIG.RequestDelay .. "s", "CONFIG")
-end, COLORS.panel3, 72, 32)
-SaveDelay.Position = UDim2.new(1,-84,0,126)
-
-FormStatus = label(Form, "Add an item using ID and max price.", 9, COLORS.muted, false)
-FormStatus.Position = UDim2.fromOffset(10,166)
-FormStatus.Size = UDim2.new(1,-20,0,30)
-FormStatus.TextWrapped = true
-
-local WatchPanel = make("Frame", {
-    BackgroundColor3=COLORS.panel, Position=UDim2.fromOffset(2,338),
-    Size=UDim2.new(1,-4,0,340), BorderSizePixel=0,
-}, MarketPage)
-addCorner(WatchPanel, 9)
-
-local WatchHeading = label(WatchPanel, "WATCHLIST", 12, COLORS.text, true)
-WatchHeading.Position = UDim2.fromOffset(12,7)
-WatchHeading.Size = UDim2.new(1,-24,0,22)
-
-local WatchScroll = make("ScrollingFrame", {
-    BackgroundColor3=COLORS.bg, Position=UDim2.fromOffset(8,34),
-    Size=UDim2.new(1,-16,1,-42), BorderSizePixel=0,
-    ScrollBarThickness=4, ScrollBarImageColor3=COLORS.accent,
-    AutomaticCanvasSize=Enum.AutomaticSize.Y, CanvasSize=UDim2.new(0,0,0,0),
-}, WatchPanel)
-addCorner(WatchScroll, 7)
-make("UIListLayout", {Padding=UDim.new(0,5), SortOrder=Enum.SortOrder.LayoutOrder}, WatchScroll)
-make("UIPadding", {PaddingTop=UDim.new(0,5),PaddingBottom=UDim.new(0,5),PaddingLeft=UDim.new(0,5),PaddingRight=UDim.new(0,5)}, WatchScroll)
-
-local GridPanel = make("Frame", {
-    BackgroundColor3=COLORS.panel, Position=UDim2.fromOffset(2,686),
-    Size=UDim2.new(1,-4,0,330), BorderSizePixel=0,
-}, MarketPage)
-addCorner(GridPanel, 9)
-
-local GridHeading = label(GridPanel, "MARKET GRID ID SCANNER", 12, COLORS.text, true)
-GridHeading.Position = UDim2.fromOffset(12,7)
-GridHeading.Size = UDim2.new(1,-24,0,22)
-
-GridStatus = label(GridPanel, "GRID WAITING — OPEN MARKET", 9, COLORS.orange, true)
-GridStatus.Position = UDim2.fromOffset(12,30)
-GridStatus.Size = UDim2.new(1,-24,0,18)
-
-local ScanGrid = button(GridPanel, "SCAN GRID", function()
-    scanMarketGrid()
-    refreshIDList()
-end, COLORS.blue, 112, 30)
-ScanGrid.Position = UDim2.fromOffset(10,54)
-
-local CopyIDs = button(GridPanel, "COPY ALL", function()
-    if #DiscoveredIDs == 0 then addLog("No IDs discovered", "WARNING"); return end
-    if safeClipboard(table.concat(DiscoveredIDs,"\n")) then
-        addLog("Copied " .. #DiscoveredIDs .. " IDs", "ID SCANNER")
-    else
-        addLog("Clipboard unavailable", "ERROR")
-    end
-end, COLORS.panel3, 100, 30)
-CopyIDs.Position = UDim2.new(1,-110,0,54)
-
-local SearchID = textbox(GridPanel, "Filter discovered IDs...", 300)
-SearchID.Position = UDim2.fromOffset(10,92)
-SearchID.Size = UDim2.new(1,-20,0,32)
-
-IDList = make("ScrollingFrame", {
-    BackgroundColor3=COLORS.bg, Position=UDim2.fromOffset(8,132),
-    Size=UDim2.new(1,-16,1,-140), BorderSizePixel=0,
-    ScrollBarThickness=4, AutomaticCanvasSize=Enum.AutomaticSize.Y,
-    CanvasSize=UDim2.new(0,0,0,0),
-}, GridPanel)
-addCorner(IDList, 6)
-make("UIListLayout", {Padding=UDim.new(0,3),SortOrder=Enum.SortOrder.LayoutOrder}, IDList)
-make("UIPadding", {PaddingTop=UDim.new(0,4),PaddingBottom=UDim.new(0,4),PaddingLeft=UDim.new(0,4),PaddingRight=UDim.new(0,4)}, IDList)
-
-local LogPanel = make("Frame", {
-    BackgroundColor3=COLORS.panel, Position=UDim2.fromOffset(2,1024),
-    Size=UDim2.new(1,-4,0,220), BorderSizePixel=0,
-}, MarketPage)
-addCorner(LogPanel, 9)
-
-local LogHeading = label(LogPanel, "ACTIVITY LOG", 11, COLORS.text, true)
-LogHeading.Position = UDim2.fromOffset(12,7)
-LogHeading.Size = UDim2.new(1,-24,0,22)
-
-LogList = make("ScrollingFrame", {
-    BackgroundColor3=COLORS.bg, Position=UDim2.fromOffset(8,34),
-    Size=UDim2.new(1,-16,1,-42), BorderSizePixel=0,
-    ScrollBarThickness=4, AutomaticCanvasSize=Enum.AutomaticSize.Y,
-    CanvasSize=UDim2.new(0,0,0,0),
-}, LogPanel)
-addCorner(LogList, 6)
-make("UIListLayout", {Padding=UDim.new(0,2),SortOrder=Enum.SortOrder.LayoutOrder}, LogList)
-make("UIPadding", {PaddingTop=UDim.new(0,4),PaddingBottom=UDim.new(0,4),PaddingLeft=UDim.new(0,5),PaddingRight=UDim.new(0,5)}, LogList)
-
--- MARKET UI REFRESH
---==================================================
-
-function refreshWatchlist()
-    if not WatchScroll then return end
-    for _, child in ipairs(WatchScroll:GetChildren()) do
-        if child:IsA("Frame") then child:Destroy() end
-    end
-
-    for index, item in ipairs(Watchlist) do
-        local result = Results[item.id] or {}
-        local card = make("Frame", {
-            BackgroundColor3=COLORS.panel2, Size=UDim2.new(1,-4,0,126),
-            BorderSizePixel=0, LayoutOrder=index,
-        }, WatchScroll)
-        addCorner(card, 7)
-
-        local name = label(card, item.name, 11, COLORS.text, true)
-        name.Position=UDim2.fromOffset(9,5)
-        name.Size=UDim2.new(1,-18,0,18)
-        name.TextTruncate=Enum.TextTruncate.AtEnd
-
-        local infoText = result.success and result.lowest
-            and ("LOWEST $"..formatNumber(result.lowest).."  •  LISTINGS "..tostring(result.count or 0))
-            or (result.success and "NO ACTIVE LISTINGS" or (result.error and "SCAN ERROR" or "WAITING FOR SCAN"))
-        local info = label(card,infoText,9,
-            result.success and result.lowest and result.lowest <= item.maxPrice and COLORS.green or COLORS.muted,true)
-        info.Position=UDim2.fromOffset(9,26)
-        info.Size=UDim2.new(1,-18,0,17)
-        info.TextTruncate=Enum.TextTruncate.AtEnd
-
-        local max = label(card,"MAX $"..formatNumber(item.maxPrice).."  •  "..item.id,9,COLORS.orange,true)
-        max.Position=UDim2.fromOffset(9,45)
-        max.Size=UDim2.new(1,-18,0,17)
-        max.TextTruncate=Enum.TextTruncate.AtEnd
-
-        local function small(text,x,y,w,color,fn)
-            local b=button(card,text,fn,color,w,27)
-            b.Position=UDim2.fromOffset(x,y)
-            b.TextSize=8
-            return b
-        end
-
-        small(item.priority and "★ PRIORITY" or "☆ PRIORITY",8,70,82,item.priority and COLORS.orange or COLORS.panel3,function()
-            if item.priority then item.priority=false else
-                for _,other in ipairs(Watchlist) do other.priority=false end
-                item.priority=true
-            end
-            saveState(); refreshWatchlist()
-        end)
-        small(item.enabled and "ON" or "OFF",96,70,48,item.enabled and COLORS.green or COLORS.red,function()
-            item.enabled=not item.enabled; saveState(); refreshWatchlist()
-        end)
-        small(item.autoBuy and "AUTO ON" or "AUTO OFF",150,70,72,item.autoBuy and COLORS.green or COLORS.panel3,function()
-            item.autoBuy=not item.autoBuy; saveState(); refreshWatchlist()
-        end)
-        small("EDIT PRICE",228,70,78,COLORS.blue,function()
-            IdBox.Text=item.id; NameBox.Text=item.name; PriceBox.Text=tostring(item.maxPrice)
-            FormStatus.Text="Editing "..item.name.." — update price then tap ADD / UPDATE."
-            FormStatus.TextColor3=COLORS.blue
-            MarketPage.CanvasPosition=Vector2.new(0,0)
-        end)
-        small("DEL",312,70,38,COLORS.red,function()
-            table.remove(Watchlist,index); Results[item.id]=nil
-            saveState(); refreshWatchlist()
-        end)
-    end
-end
-
-function refreshIDList()
-    if not IDList then return end
-    for _, child in ipairs(IDList:GetChildren()) do
-        if child:IsA("Frame") then child:Destroy() end
-    end
-    local q = (SearchID and SearchID.Text or ""):lower()
-    for i,id in ipairs(DiscoveredIDs) do
-        if q == "" or id:lower():find(q,1,true) then
-            local row = make("Frame", {
-                BackgroundColor3=COLORS.panel2, Size=UDim2.new(1,-3,0,38),
-                BorderSizePixel=0, LayoutOrder=i,
-            }, IDList)
-            addCorner(row,5)
-            local txt = label(row,id,9,COLORS.text,true)
-            txt.Position=UDim2.fromOffset(7,0)
-            txt.Size=UDim2.new(1,-92,1,0)
-            local copy = button(row,"COPY",function()
-                if safeClipboard(id) then addLog("Copied ID "..id,"ID SCANNER") end
-            end,COLORS.panel3,40,24)
-            copy.Position=UDim2.new(1,-82,0,7)
-            local add = button(row,"USE",function()
-                IdBox.Text=id
-                NameBox.Text=id
-            end,COLORS.accent,38,24)
-            add.Position=UDim2.new(1,-40,0,7)
-        end
-    end
-end
-
-SearchID:GetPropertyChangedSignal("Text"):Connect(refreshIDList)
-
---==================================================
--- NPC PAGE UI — MOBILE PORTRAIT
---==================================================
-
-local NPCHeader = make("Frame", {
-    BackgroundColor3=COLORS.panel, Position=UDim2.fromOffset(2,2),
-    Size=UDim2.new(1,-4,0,126), BorderSizePixel=0,
-}, NPCPage)
-addCorner(NPCHeader, 10)
-
-local NPCTitle = label(NPCHeader, "NPC AUTO BUY  /  15 MIN", 13, COLORS.text, true)
-NPCTitle.Position=UDim2.fromOffset(12,7)
-NPCTitle.Size=UDim2.new(1,-24,0,22)
-
-NPCStatus = label(NPCHeader, "STOPPED", 9, COLORS.orange, true)
-NPCStatus.Position=UDim2.fromOffset(12,32)
-NPCStatus.Size=UDim2.fromOffset(120,18)
-
-NPCTimer = label(NPCHeader, "NEXT BUY IN  15:00", 25, COLORS.text, true)
-NPCTimer.Position=UDim2.fromOffset(12,54)
-NPCTimer.Size=UDim2.new(1,-24,0,36)
-
-NPCSeconds = label(NPCHeader, "15-minute automatic purchase interval", 9, COLORS.blue, true)
-NPCSeconds.Position=UDim2.fromOffset(12,94)
-NPCSeconds.Size=UDim2.new(1,-24,0,20)
-
-local NPCButtons = make("Frame", {
-    BackgroundColor3=COLORS.panel, Position=UDim2.fromOffset(2,138),
-    Size=UDim2.new(1,-4,0,112), BorderSizePixel=0,
-}, NPCPage)
-addCorner(NPCButtons, 9)
-
-local NPCStart = button(NPCButtons,"START MONITOR",startNPCMonitor,COLORS.green,166,34)
-NPCStart.Position=UDim2.fromOffset(9,8)
-
-local NPCStop = button(NPCButtons,"STOP",stopNPCMonitor,COLORS.red,76,34)
-NPCStop.Position=UDim2.fromOffset(183,8)
-
-local NPCBuyAll = button(NPCButtons,"BUY ALL NOW",function()
-    task.spawn(function() buyAllNPCAmmo(true) end)
-end,COLORS.blue,350,34)
-NPCBuyAll.Position=UDim2.fromOffset(9,50)
-NPCBuyAll.Size=UDim2.new(1,-18,0,34)
-
-NPCRequests = label(NPCButtons,"REQUESTS FIRED  0",9,COLORS.muted,true)
-NPCRequests.Position=UDim2.fromOffset(10,88)
-NPCRequests.Size=UDim2.fromOffset(150,17)
-
-NPCCycles = label(NPCButtons,"BATCHES  0  •  11 AMMO TYPES",9,COLORS.muted,true)
-NPCCycles.Position=UDim2.new(1,-190,0,88)
-NPCCycles.Size=UDim2.fromOffset(180,17)
-NPCCycles.TextXAlignment=Enum.TextXAlignment.Right
-
-local AmmoPanel = make("Frame", {
-    BackgroundColor3=COLORS.panel, Position=UDim2.fromOffset(2,260),
-    Size=UDim2.new(1,-4,0,444), BorderSizePixel=0,
-}, NPCPage)
-addCorner(AmmoPanel,9)
-
-local AmmoHeading = label(AmmoPanel,"PURCHASE QUEUE  /  11 AMMO TYPES",11,COLORS.text,true)
-AmmoHeading.Position=UDim2.fromOffset(12,8)
-AmmoHeading.Size=UDim2.new(1,-24,0,22)
-
-local AmmoScroll = make("ScrollingFrame", {
-    BackgroundColor3=COLORS.bg, Position=UDim2.fromOffset(8,36),
-    Size=UDim2.new(1,-16,1,-44), BorderSizePixel=0,
-    ScrollBarThickness=4, AutomaticCanvasSize=Enum.AutomaticSize.Y,
-    CanvasSize=UDim2.new(0,0,0,0),
-}, AmmoPanel)
-addCorner(AmmoScroll,7)
-make("UIListLayout",{Padding=UDim.new(0,4),SortOrder=Enum.SortOrder.LayoutOrder},AmmoScroll)
-make("UIPadding",{PaddingTop=UDim.new(0,5),PaddingBottom=UDim.new(0,5),PaddingLeft=UDim.new(0,5),PaddingRight=UDim.new(0,5)},AmmoScroll)
-
-for i,ammo in ipairs(ammoList) do
-    local row=make("Frame",{
-        BackgroundColor3=COLORS.panel2,Size=UDim2.new(1,-4,0,34),
-        BorderSizePixel=0,LayoutOrder=i,
-    },AmmoScroll)
-    addCorner(row,5)
-    local group=i<=5 and "12GA" or ".308"
-    local t=label(row,string.format("%02d  %s  •  %s",i,group,ammo.offer),9,COLORS.text,true)
-    t.Position=UDim2.fromOffset(8,0)
-    t.Size=UDim2.new(1,-125,1,0)
-    local detail=label(row,"x"..ammo.count.." / "..ammo.req,9,COLORS.muted,true)
-    detail.Position=UDim2.new(1,-112,0,0)
-    detail.Size=UDim2.fromOffset(102,34)
-    detail.TextXAlignment=Enum.TextXAlignment.Right
-end
-
-local NPCInfo = make("Frame", {
-    BackgroundColor3=COLORS.panel, Position=UDim2.fromOffset(2,714),
-    Size=UDim2.new(1,-4,0,190), BorderSizePixel=0,
-}, NPCPage)
-addCorner(NPCInfo,9)
-
-local InfoHeading = label(NPCInfo,"MONITOR DETAILS",11,COLORS.text,true)
-InfoHeading.Position=UDim2.fromOffset(12,8)
-InfoHeading.Size=UDim2.new(1,-24,0,22)
-
-NPCAction = label(NPCInfo,"ACTION  IDLE",10,COLORS.orange,true)
-NPCAction.Position=UDim2.fromOffset(12,36)
-NPCAction.Size=UDim2.new(1,-24,0,30)
-NPCAction.TextWrapped=true
-
-NPCSource = label(NPCInfo,"SOURCE  Toolbar descendants",9,COLORS.muted,false)
-NPCSource.Position=UDim2.fromOffset(12,72)
-NPCSource.Size=UDim2.new(1,-24,0,42)
-NPCSource.TextWrapped=true
-
-local DelayInfo = label(NPCInfo,"TRIGGER  3 SEC  •  RESET  15:00",9,COLORS.blue,true)
-DelayInfo.Position=UDim2.fromOffset(12,122)
-DelayInfo.Size=UDim2.new(1,-24,0,20)
-
-local NPCNote = label(NPCInfo,"Timer keeps running while you switch tabs. Opening this tab syncs it with the live NPC timer.",9,COLORS.muted,false)
-NPCNote.Position=UDim2.fromOffset(12,146)
-NPCNote.Size=UDim2.new(1,-24,0,36)
-NPCNote.TextWrapped=true
-
---==================================================
--- ANTI-AFK TOGGLE (TOP BAR)
---==================================================
-
-local AntiAFKButton
-AntiAFKButton = button(Top,"ANTI-AFK OFF",function()
-    AntiAFKEnabled = not AntiAFKEnabled
-    if AntiAFKConnection then
-        AntiAFKConnection:Disconnect()
-        AntiAFKConnection=nil
-    end
-    if AntiAFKEnabled then
-        AntiAFKConnection = Player.Idled:Connect(function()
-            pcall(function()
-                VirtualUser:CaptureController()
-                VirtualUser:ClickButton2(Vector2.new(0,0))
-            end)
-        end)
-        AntiAFKButton.Text="ANTI-AFK ON"
-        AntiAFKButton.BackgroundColor3=COLORS.green
-    else
-        AntiAFKButton.Text="ANTI-AFK OFF"
-        AntiAFKButton.BackgroundColor3=COLORS.panel3
-    end
-    saveState()
-end,COLORS.panel3,105,30)
-AntiAFKButton.Size=UDim2.fromOffset(86,26)
-AntiAFKButton.Position=UDim2.new(1,-132,0,16)
-
---==================================================
--- PURCHASE REPORT INITIALIZATION / TOAST WATCHER
---==================================================
-
-local function refreshPurchaseTotals()
-    PurchaseTotalSpent, PurchaseTotalUnits = 0,0
-    for _, r in ipairs(PurchaseRecords) do
-        PurchaseTotalSpent += tonumber(r.price) or 0
-        PurchaseTotalUnits += tonumber(r.quantity) or 0
-    end
-end
-refreshPurchaseTotals()
-
-local function watchPurchaseContainer(container)
-    for _, obj in ipairs(container:GetDescendants()) do
-        if obj:IsA("TextLabel") or obj:IsA("TextButton") then
-            inspectPurchaseText(obj)
-        end
-    end
-    table.insert(PurchaseConnections,container.DescendantAdded:Connect(function(obj)
-        if obj:IsA("TextLabel") or obj:IsA("TextButton") then inspectPurchaseText(obj) end
-    end))
-end
-
-watchPurchaseContainer(PlayerGui)
-
---==================================================
--- STARTUP / AUTO REFRESH
---==================================================
-
-refreshWatchlist()
-refreshIDList()
-saveState()
-showTab("MARKET")
-addLog("Hush Control Center initialized", "SYSTEM")
-addLog("Market API: menu.get / bmItem; buy op: bmBuyBest", "SYSTEM")
-addLog("NPC queue loaded: 5x 12GA + 6x .308", "SYSTEM")
-
-task.spawn(function()
-    task.wait(2)
-    scanMarketGrid()
-    refreshIDList()
-end)
-
-task.spawn(function()
-    while ScreenGui and ScreenGui.Parent do
-        task.wait(CONFIG.GridRefreshInterval)
-        if not GridScanning then
-            local before = #DiscoveredIDs
-            scanMarketGrid()
-            if #DiscoveredIDs ~= before then refreshIDList() end
-        end
-    end
-end)
-
-ScreenGui.Destroying:Connect(function()
-    stopMarketMonitor()
-    stopNPCMonitor()
-    AntiAFKEnabled=false
-    if AntiAFKConnection then AntiAFKConnection:Disconnect() end
-    for _, connection in ipairs(PurchaseConnections) do
-        pcall(function() connection:Disconnect() end)
-    end
-    saveState()
-end)
+scanVehicles()
+updateTracking()
+
+print("================================")
+print("       VEZA GUI v3.4")
+print("================================")
+print("Vehicle Tracker: READY")
+print("Distance Settings: READY")
+print("Zombie ESP: READY")
+print("Vehicle ESP: READY")
+print("Player-to-Vehicle Tracer: READY")
+print("Vehicle Waypoint: READY")
+print("Military Map Highlight: READY")
+print("Preferences + Camera Zoom: READY")
+print("Force Day + No Snow: AUTO ON")
+print("Cordon Full Map Reveal: AUTO ON")
+print("Boss Scanner: READY")
+print("Vehicle Favorites / Ignore: READY")
+print("================================")
