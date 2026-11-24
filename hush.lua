@@ -3069,6 +3069,11 @@ updateMilitaryToggle()
 updateEnvironmentToggle()
 
 showPage("Tracker")
+
+-- Start in the existing compact/minimized HUD mode on first execution.
+-- The header "+" button (and Right Shift) can restore the full GUI.
+setCompactVehicleList(true)
+
 if RememberSettings then
     saveConfig()
 end
