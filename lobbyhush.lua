@@ -117,6 +117,8 @@ local AutoSellStatus, AutoSellList, AutoSellListLayout
 local AutoSellSearch, AutoSellScanTab, AutoSellWatchTab
 local AutoSellCurrentView = "SCAN"
 local scanSellInventory, renderAutoSellList, setAutoSellView
+local setAutoSellEnabled
+local AutoSellEnabled = false
 
 --==================================================
 -- PERSISTENCE
@@ -1161,6 +1163,7 @@ local AutoSellPage = make("Frame", {
 }, PageArea)
 
 local syncNPCFromGameLabel -- assigned after NPC timer UI is created
+local requestSellAllFromHome -- assigned in AUTO SELL module; invoked by HOME button
 
 local function showTab(which)
     local home = which == "HOME"
@@ -1269,6 +1272,15 @@ HomeTitle.Size = UDim2.new(1,-36,0,28)
 local HomeSubtitle = label(HomeIntro, "OVERVIEW  •  MARKET WATCH  •  NPC RESTOCK  •  PRESET MANAGER", 10, COLORS.muted, false)
 HomeSubtitle.Position = UDim2.fromOffset(19,43)
 HomeSubtitle.Size = UDim2.new(1,-38,0,20)
+
+local HomeSellAllButton = button(HomeIntro, "SELL ALL", function()
+    if requestSellAllFromHome then
+        requestSellAllFromHome()
+    else
+        addLog("Sell All is not ready yet.", "SELL")
+    end
+end, COLORS.orange, 118, 34)
+HomeSellAllButton.Position = UDim2.new(1,-136,0,23)
 
 local HomeStats = make("Frame", {
     BackgroundTransparency=1, Position=UDim2.fromOffset(0,94),
@@ -2032,7 +2044,7 @@ AntiAFKButton.Position=UDim2.new(1,-340,0,18)
 --==================================================
 
 local SettingsPanel = make("Frame", {
-    BackgroundColor3=COLORS.panel, Size=UDim2.new(1,0,0,390),
+    BackgroundColor3=COLORS.panel, Size=UDim2.new(1,0,0,470),
     BorderSizePixel=0,
 }, SettingsPage)
 addCorner(SettingsPanel, 10)
@@ -2100,10 +2112,23 @@ makeSettingRow(254,
     function(value) BuyAllOnExecute = value end
 )
 
+local AutoSellSettingToggle = makeSettingRow(340,
+    "AUTO SELL ITEMS IN SELL LIST",
+    "When ON, automatically sends sell requests for scanned items added to SELL LIST. When OFF, scanning continues but no items are sold.",
+    function() return AutoSellEnabled end,
+    function(value)
+        if setAutoSellEnabled then
+            setAutoSellEnabled(value)
+        else
+            AutoSellEnabled = value == true
+        end
+    end
+)
+
 local SettingsFootnote = label(SettingsPanel,
     "Settings are saved automatically when executor file APIs are available. Manual START / STOP buttons remain available.",
     9, COLORS.muted, false)
-SettingsFootnote.Position = UDim2.fromOffset(18,344)
+SettingsFootnote.Position = UDim2.fromOffset(18,426)
 SettingsFootnote.Size = UDim2.new(1,-36,0,32)
 SettingsFootnote.TextWrapped = true
 SettingsFootnote.TextYAlignment = Enum.TextYAlignment.Top
@@ -2140,11 +2165,20 @@ local AutoSellConfig = {
     SellDelay = 0.15,
     FileName = "HushAutoSell_Watchlist.json",
     ReqMap = {
+        -- Confirmed full item names from the original HUSH AUTO SELL v1.0.
         ["Gold Coin Collection"] = 2,
         ["Motherboard"] = 2,
         ["Jewelry Box"] = 6,
+
+        -- Inventory UI labels shown in the current scanner.
+        -- These are aliases for the same three confirmed item types above.
+        ["GOLD COINS"] = 2, -- Gold Coin Collection
+        ["BOARD"] = 2,      -- Motherboard
+        ["JEWELRY"] = 6,    -- Jewelry Box
     },
 }
+
+local AutoSellSellAllBusy = false
 
 local AutoSellState = {
     Running = false,
@@ -2159,7 +2193,11 @@ local AutoSellState = {
 local function saveAutoSellWatchlist()
     if type(writefile) ~= "function" then return end
     pcall(function()
-        writefile(AutoSellConfig.FileName, HttpService:JSONEncode(AutoSellState.Watchlist))
+        local payload = {
+            watchlist = AutoSellState.Watchlist,
+            autoSellEnabled = AutoSellEnabled == true,
+        }
+        writefile(AutoSellConfig.FileName, HttpService:JSONEncode(payload))
     end)
 end
 
@@ -2170,12 +2208,35 @@ local function loadAutoSellWatchlist()
         return HttpService:JSONDecode(readfile(AutoSellConfig.FileName))
     end)
     if ok and type(data) == "table" then
-        AutoSellState.Watchlist = data
+        -- New format stores both the list and the master auto-sell switch.
+        if type(data.watchlist) == "table" then
+            AutoSellState.Watchlist = data.watchlist
+            AutoSellEnabled = data.autoSellEnabled == true
+        else
+            -- Backward compatibility with the previous file format (name=true).
+            AutoSellState.Watchlist = data
+            AutoSellEnabled = false
+        end
     end
 end
 loadAutoSellWatchlist()
+if AutoSellSettingToggle then
+    AutoSellSettingToggle.Text = AutoSellEnabled and "ON" or "OFF"
+    AutoSellSettingToggle.BackgroundColor3 = AutoSellEnabled and COLORS.green or COLORS.panel3
+end
 
-local function autoSellLog(message)
+local autoSellLog
+setAutoSellEnabled = function(enabled)
+    AutoSellEnabled = enabled == true
+    saveAutoSellWatchlist()
+    if AutoSellSettingToggle then
+        AutoSellSettingToggle.Text = AutoSellEnabled and "ON" or "OFF"
+        AutoSellSettingToggle.BackgroundColor3 = AutoSellEnabled and COLORS.green or COLORS.panel3
+    end
+    autoSellLog("Auto Sell " .. (AutoSellEnabled and "ENABLED" or "DISABLED"))
+end
+
+autoSellLog = function(message)
     local line = "[" .. os.date("%H:%M:%S") .. "] " .. tostring(message)
     table.insert(AutoSellState.Logs, 1, line)
     while #AutoSellState.Logs > 40 do table.remove(AutoSellState.Logs) end
@@ -2324,7 +2385,7 @@ end
 local function addSellWatch(name)
     AutoSellState.Watchlist[name] = true
     saveAutoSellWatchlist()
-    autoSellLog("Added to sell list: " .. name)
+    autoSellLog("Added to sell list: " .. name .. (AutoSellEnabled and " (auto sell ON)" or " (auto sell currently OFF)"))
 end
 
 local function removeSellWatch(name)
@@ -2333,7 +2394,7 @@ local function removeSellWatch(name)
     autoSellLog("Removed from sell list: " .. name)
 end
 
-local function sellWatchedGroup(itemName)
+local function sellWatchedGroup(itemName, manual)
     if AutoSellState.Selling then return false end
     local item = AutoSellState.Items[itemName]
     if not item or #item.UIDs == 0 then return false end
@@ -2348,7 +2409,7 @@ local function sellWatchedGroup(itemName)
     local sent, failed = 0, 0
 
     for _, uid in ipairs(item.UIDs) do
-        if not AutoSellState.Running then break end
+        if not manual and (not AutoSellState.Running or not AutoSellEnabled) then break end
         local ok, err = pcall(function()
             MenuOp:FireServer({
                 trader="scrapper",
@@ -2373,6 +2434,84 @@ local function sellWatchedGroup(itemName)
     return true
 end
 
+requestSellAllFromHome = function()
+    if AutoSellState.Selling or AutoSellSellAllBusy then
+        autoSellLog("Sell All is already running.")
+        return
+    end
+
+    AutoSellSellAllBusy = true
+    HomeSellAllButton.Text = "PREPARING..."
+    HomeSellAllButton.Active = false
+    HomeSellAllButton.AutoButtonColor = false
+
+    task.spawn(function()
+        autoSellLog("Manual SELL ALL started.")
+        local opened = false
+
+        -- Navigate to Character inventory and retry briefly in case the game
+        -- is still transitioning between menus.
+        for attempt = 1, 6 do
+            if not ScreenGui or not ScreenGui.Parent then break end
+            if openCharacterInventory() then
+                opened = true
+                break
+            end
+            task.wait(1)
+        end
+
+        if not opened then
+            autoSellLog("SELL ALL stopped: could not open Character inventory.")
+            AutoSellSellAllBusy = false
+            HomeSellAllButton.Text = "SELL ALL"
+            HomeSellAllButton.Active = true
+            HomeSellAllButton.AutoButtonColor = true
+            return
+        end
+
+        task.wait(1)
+        local scanOk = scanSellInventory()
+        if not scanOk then
+            autoSellLog("SELL ALL stopped: inventory scan failed.")
+        else
+            local names = {}
+            for name, enabled in pairs(AutoSellState.Watchlist) do
+                if enabled == true then
+                    table.insert(names, name)
+                end
+            end
+            table.sort(names)
+
+            if #names == 0 then
+                autoSellLog("SELL ALL: Sell List is empty.")
+            else
+                local soldGroups, skippedGroups = 0, 0
+                for _, itemName in ipairs(names) do
+                    local item = AutoSellState.Items[itemName]
+                    if item and item.Count > 0 then
+                        local req = AutoSellConfig.ReqMap[itemName]
+                        if req then
+                            local ok = sellWatchedGroup(itemName, true)
+                            if ok then soldGroups += 1 else skippedGroups += 1 end
+                            task.wait(0.3)
+                        else
+                            skippedGroups += 1
+                            autoSellLog("SELL ALL skipped " .. itemName .. ": req mapping unavailable.")
+                        end
+                    end
+                end
+                autoSellLog("SELL ALL finished | groups sent: " .. soldGroups .. " | skipped: " .. skippedGroups)
+            end
+        end
+
+        AutoSellSellAllBusy = false
+        HomeSellAllButton.Text = "SELL ALL"
+        HomeSellAllButton.Active = true
+        HomeSellAllButton.AutoButtonColor = true
+        renderAutoSellList()
+    end)
+end
+
 local function startAutoSell()
     if AutoSellState.Running then return end
     AutoSellState.Running = true
@@ -2382,7 +2521,20 @@ local function startAutoSell()
         while AutoSellState.Running and ScreenGui and ScreenGui.Parent do
             scanSellInventory()
 
-            if AutoSellState.Running then
+            if AutoSellStatus then
+                local total = 0
+                for _, scanned in pairs(AutoSellState.Items) do
+                    total += scanned.Count or 0
+                end
+                AutoSellStatus.Text = AutoSellEnabled
+                    and ("AUTO SELL  ON  •  " .. total .. " ITEMS SCANNED")
+                    or ("SCANNING  •  AUTO SELL OFF  •  " .. total .. " ITEMS")
+                AutoSellStatus.TextColor3 = AutoSellEnabled and COLORS.green or COLORS.orange
+            end
+
+            -- Inventory scanning remains active, but actual sell requests are
+            -- strictly gated by the master switch in Settings.
+            if AutoSellState.Running and AutoSellEnabled then
                 local names = {}
                 for name, enabled in pairs(AutoSellState.Watchlist) do
                     if enabled == true then table.insert(names, name) end
@@ -2390,7 +2542,7 @@ local function startAutoSell()
                 table.sort(names)
 
                 for _, itemName in ipairs(names) do
-                    if not AutoSellState.Running then break end
+                    if not AutoSellState.Running or not AutoSellEnabled then break end
                     local item = AutoSellState.Items[itemName]
                     if item and item.Count > 0 then
                         sellWatchedGroup(itemName)
