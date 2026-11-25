@@ -152,6 +152,18 @@ local SelectedPreset = SavedState and SavedState.selectedPreset == "new_map" and
 local AutoStartMarket = not SavedState or SavedState.autoStartMarket ~= false
 local AutoStartNPC = not SavedState or SavedState.autoStartNPC ~= false
 local BuyAllOnExecute = not SavedState or SavedState.buyAllOnExecute ~= false
+local AutoInsuranceEnabled = SavedState and SavedState.autoInsuranceEnabled == true or false
+local InsuranceSlotSelection = {
+    armor=true, bag=true, boots=true, ears=true, helmet=true,
+    legs=true, melee=true, primary=true, secondary=true,
+}
+if SavedState and type(SavedState.insuranceSlots) == "table" then
+    for key in pairs(InsuranceSlotSelection) do
+        if type(SavedState.insuranceSlots[key]) == "boolean" then
+            InsuranceSlotSelection[key] = SavedState.insuranceSlots[key]
+        end
+    end
+end
 local PresetLoadBusy = false
 local LastPresetMapState = false
 
@@ -248,6 +260,8 @@ local function saveState()
         autoStartMarket=AutoStartMarket,
         autoStartNPC=AutoStartNPC,
         buyAllOnExecute=BuyAllOnExecute,
+        autoInsuranceEnabled=AutoInsuranceEnabled == true,
+        insuranceSlots=InsuranceSlotSelection,
     }
     for _, ammo in ipairs(ammoList) do
         state.ammoEnabled[ammo.offer] = ammo.enabled == true
@@ -1355,6 +1369,192 @@ PresetFootnote.Position = UDim2.fromOffset(15,226)
 PresetFootnote.Size = UDim2.new(1,-30,0,34)
 PresetFootnote.TextWrapped = true
 
+--==================================================
+-- EQUIPMENT INSURANCE MONITOR + AUTO INSURANCE
+--==================================================
+
+local InsuranceTitle = label(PresetPanel, "EQUIPMENT  /  INSURANCE CHECK", 11, COLORS.text, true)
+InsuranceTitle.Position = UDim2.fromOffset(15,270)
+InsuranceTitle.Size = UDim2.new(1,-30,0,20)
+
+local InsuranceStatus = label(PresetPanel, "SCANNING EQUIPMENT...", 9, COLORS.muted, true)
+InsuranceStatus.Position = UDim2.new(1,-155,0,270)
+InsuranceStatus.Size = UDim2.fromOffset(140,20)
+InsuranceStatus.TextXAlignment = Enum.TextXAlignment.Right
+
+local InsuranceList = make("ScrollingFrame", {
+    Name="InsuranceList",
+    Position=UDim2.fromOffset(12,294),
+    Size=UDim2.new(1,-24,1,-306),
+    BackgroundColor3=COLORS.panel2,
+    BorderSizePixel=0,
+    ScrollBarThickness=4,
+    ScrollBarImageColor3=COLORS.accent,
+    CanvasSize=UDim2.new(0,0,0,0),
+    AutomaticCanvasSize=Enum.AutomaticSize.None,
+}, PresetPanel)
+addCorner(InsuranceList, 7)
+
+local InsuranceListLayout = make("UIListLayout", {
+    Padding=UDim.new(0,2),
+    SortOrder=Enum.SortOrder.LayoutOrder,
+}, InsuranceList)
+make("UIPadding", {
+    PaddingTop=UDim.new(0,4),
+    PaddingBottom=UDim.new(0,4),
+    PaddingLeft=UDim.new(0,6),
+    PaddingRight=UDim.new(0,6),
+}, InsuranceList)
+
+local EquipmentSlots = {
+    {key="armor", label="ARMOR"},
+    {key="bag", label="BAG"},
+    {key="boots", label="BOOTS"},
+    {key="ears", label="HEADSET"},
+    {key="helmet", label="HEAD"},
+    {key="legs", label="LEGS"},
+    {key="melee", label="MELEE"},
+    {key="primary", label="PRIMARY"},
+    {key="secondary", label="SIDEARM"},
+}
+
+local LastInsuranceSignature = nil
+local LastInsuranceAttempt = {}
+local AutoInsuranceBusy = false
+
+local function getEquipmentSnapshot()
+    local equipmentItems = {}
+    local characterPage = PlayerGui:FindFirstChild("HushMenu")
+        and PlayerGui.HushMenu:FindFirstChild("Root")
+        and PlayerGui.HushMenu.Root:FindFirstChild("Pages")
+        and PlayerGui.HushMenu.Root.Pages:FindFirstChild("Page_character")
+    local area = characterPage and characterPage:FindFirstChild("Area")
+    local body = area and area:FindFirstChild("Body")
+    local inventory = body and body:FindFirstChild("Inventory")
+    local ui = inventory and inventory:FindFirstChild("HushInventoryUI")
+    local columns = ui and ui:FindFirstChild("Body") and ui.Body:FindFirstChild("Columns")
+    local equipment = columns and columns:FindFirstChild("Equipment")
+    local content = equipment and equipment:FindFirstChild("Content")
+    local scroll = content and content:FindFirstChild("Scroll")
+    if not scroll then return nil, "Equipment slots are not mounted" end
+
+    for _, slotInfo in ipairs(EquipmentSlots) do
+        local slot = scroll:FindFirstChild("Slot_" .. slotInfo.key)
+        if slot then
+            for _, child in ipairs(slot:GetChildren()) do
+                local uid = child.Name:match("^Item_(.+)$")
+                if uid then
+                    local short = child:FindFirstChild("Short", true)
+                    local itemName = short and
+                        (short:IsA("TextLabel") or short:IsA("TextButton")) and
+                        tostring(short.Text or "") or ""
+                    itemName = itemName:gsub("^%s+", ""):gsub("%s+$", "")
+                    if itemName ~= "" then
+                        table.insert(equipmentItems, {
+                            slot=slotInfo.key,
+                            slotLabel=slotInfo.label,
+                            uid=uid,
+                            name=itemName,
+                            insured=child:FindFirstChild("InsMark", true) ~= nil,
+                        })
+                    end
+                    break
+                end
+            end
+        end
+    end
+    return equipmentItems
+end
+
+local function scanEquipmentInsurance()
+    local allItems = getEquipmentSnapshot()
+    if not allItems then
+        InsuranceStatus.Text = "WAITING FOR EQUIPMENT UI"
+        InsuranceStatus.TextColor3 = COLORS.orange
+        return
+    end
+
+    local uninsuredItems, total, uninsured = {}, #allItems, 0
+    for _, item in ipairs(allItems) do
+        if not item.insured then
+            uninsured += 1
+            table.insert(uninsuredItems, item)
+        end
+    end
+
+    local signatureParts = {}
+    for _, entry in ipairs(uninsuredItems) do
+        table.insert(signatureParts, entry.slot .. ":" .. entry.name)
+    end
+    local signature = tostring(total) .. "|" .. table.concat(signatureParts, "|")
+    InsuranceStatus.Text = uninsured .. " UNINSURED  /  " .. total .. " EQUIPPED"
+    InsuranceStatus.TextColor3 = uninsured > 0 and COLORS.orange or COLORS.green
+    if signature == LastInsuranceSignature then return end
+    LastInsuranceSignature = signature
+
+    for _, child in ipairs(InsuranceList:GetChildren()) do
+        if child:IsA("Frame") or child:IsA("TextLabel") then child:Destroy() end
+    end
+
+    if #uninsuredItems == 0 then
+        local empty = label(InsuranceList,
+            total == 0 and "No equipped items found." or "All equipped items are insured.",
+            9, COLORS.green, true)
+        empty.Position = UDim2.fromOffset(5,0)
+        empty.Size = UDim2.new(1,-10,0,22)
+    else
+        for index, entry in ipairs(uninsuredItems) do
+            local row = make("Frame", {
+                BackgroundColor3=COLORS.panel3,
+                Size=UDim2.new(1,-4,0,22),
+                LayoutOrder=index,
+                BorderSizePixel=0,
+            }, InsuranceList)
+            addCorner(row, 4)
+            local itemLabel = label(row, entry.slotLabel .. "  •  " .. entry.name, 9, COLORS.text, true)
+            itemLabel.Position = UDim2.fromOffset(7,0)
+            itemLabel.Size = UDim2.new(1,-85,1,0)
+            local status = label(row, "NO INSURANCE", 8, COLORS.orange, true)
+            status.Position = UDim2.new(1,-88,0,0)
+            status.Size = UDim2.fromOffset(82,22)
+            status.TextXAlignment = Enum.TextXAlignment.Right
+        end
+    end
+    InsuranceList.CanvasSize = UDim2.new(0,0,0,InsuranceListLayout.AbsoluteContentSize.Y + 8)
+end
+
+local function runAutoInsurance()
+    if not AutoInsuranceEnabled or AutoInsuranceBusy then return end
+    AutoInsuranceBusy = true
+    task.spawn(function()
+        local items = getEquipmentSnapshot()
+        if items then
+            for _, item in ipairs(items) do
+                if not AutoInsuranceEnabled then break end
+                if InsuranceSlotSelection[item.slot] and not item.insured then
+                    local lastAttempt = LastInsuranceAttempt[item.uid] or 0
+                    if os.clock() - lastAttempt >= 12 then
+                        LastInsuranceAttempt[item.uid] = os.clock()
+                        local ok, err = pcall(function()
+                            MenuOp:FireServer({op="insBuy", uid=item.uid})
+                        end)
+                        if ok then
+                            addLog("Insurance request sent: " .. item.slotLabel .. " / " .. item.name, "INSURANCE")
+                        else
+                            warn("[HushInsurance] Request failed:", item.uid, err)
+                            addLog("Insurance request error: " .. item.name, "INSURANCE")
+                        end
+                        task.wait(1)
+                    end
+                end
+            end
+        end
+        AutoInsuranceBusy = false
+        task.wait(0.5)
+        scanEquipmentInsurance()
+    end)
+end
+
 local HomeRight = make("Frame", {
     BackgroundTransparency=1, Position=UDim2.new(0.58,7,0,222),
     Size=UDim2.new(0.42,-7,1,-222),
@@ -1437,6 +1637,15 @@ task.spawn(function()
     while ScreenGui and ScreenGui.Parent do
         refreshHomePage()
         task.wait(1)
+    end
+end)
+
+-- Equipment insurance is refreshed independently from the main dashboard stats.
+task.spawn(function()
+    while ScreenGui and ScreenGui.Parent do
+        scanEquipmentInsurance()
+        runAutoInsurance()
+        task.wait(2)
     end
 end)
 
@@ -2036,7 +2245,7 @@ AntiAFKButton.Position=UDim2.new(1,-340,0,18)
 --==================================================
 
 local SettingsPanel = make("Frame", {
-    BackgroundColor3=COLORS.panel, Size=UDim2.new(1,0,0,470),
+    BackgroundColor3=COLORS.panel, Size=UDim2.new(1,0,0,606),
     BorderSizePixel=0,
 }, SettingsPage)
 addCorner(SettingsPanel, 10)
@@ -2046,7 +2255,7 @@ SettingsTitle.Position = UDim2.fromOffset(18,14)
 SettingsTitle.Size = UDim2.new(1,-36,0,28)
 
 local SettingsSubtitle = label(SettingsPanel,
-    "Choose which automation should run automatically when this script is executed.",
+    "Configure startup automation, Auto Sell, and selective equipment insurance.",
     10, COLORS.muted, false)
 SettingsSubtitle.Position = UDim2.fromOffset(18,45)
 SettingsSubtitle.Size = UDim2.new(1,-36,0,22)
@@ -2117,11 +2326,73 @@ local AutoSellSettingToggle = makeSettingRow(340,
     end
 )
 
+local InsuranceSettingsTitle = label(SettingsPanel, "AUTO INSURANCE", 12, COLORS.text, true)
+InsuranceSettingsTitle.Position = UDim2.fromOffset(18,426)
+InsuranceSettingsTitle.Size = UDim2.new(1,-36,0,22)
+
+local AutoInsuranceToggle
+AutoInsuranceToggle = button(SettingsPanel,
+    AutoInsuranceEnabled and "AUTO INSURANCE ON" or "AUTO INSURANCE OFF",
+    function()
+        AutoInsuranceEnabled = not AutoInsuranceEnabled
+        AutoInsuranceToggle.Text = AutoInsuranceEnabled and "AUTO INSURANCE ON" or "AUTO INSURANCE OFF"
+        AutoInsuranceToggle.BackgroundColor3 = AutoInsuranceEnabled and COLORS.green or COLORS.panel3
+        saveState()
+        addLog("Auto Insurance " .. (AutoInsuranceEnabled and "ENABLED" or "DISABLED"), "INSURANCE")
+        if AutoInsuranceEnabled then runAutoInsurance() end
+    end,
+    AutoInsuranceEnabled and COLORS.green or COLORS.panel3, 190, 32)
+AutoInsuranceToggle.Position = UDim2.fromOffset(18,454)
+
+local InsuranceSlotHint = label(SettingsPanel,
+    "SELECT WHICH EQUIPMENT SLOTS MAY BE AUTO-INSURED",
+    9, COLORS.muted, true)
+InsuranceSlotHint.Position = UDim2.fromOffset(220,460)
+InsuranceSlotHint.Size = UDim2.new(1,-238,0,20)
+
+local InsuranceSlotButtons = {}
+local InsuranceSlotOrder = {
+    {"primary","PRIMARY"}, {"secondary","SIDEARM"}, {"melee","MELEE"},
+    {"helmet","HEAD"}, {"armor","ARMOR"}, {"bag","BAG"},
+    {"legs","LEGS"}, {"boots","BOOTS"}, {"ears","HEADSET"},
+}
+for index, info in ipairs(InsuranceSlotOrder) do
+    local col = (index - 1) % 3
+    local row = math.floor((index - 1) / 3)
+    local key, caption = info[1], info[2]
+    local slotButton
+    slotButton = button(SettingsPanel,
+        (InsuranceSlotSelection[key] and "✓  " or "○  ") .. caption,
+        function()
+            InsuranceSlotSelection[key] = not InsuranceSlotSelection[key]
+            slotButton.Text = (InsuranceSlotSelection[key] and "✓  " or "○  ") .. caption
+            slotButton.BackgroundColor3 = InsuranceSlotSelection[key] and COLORS.blue or COLORS.panel3
+            saveState()
+        end,
+        InsuranceSlotSelection[key] and COLORS.blue or COLORS.panel3, 150, 28)
+    slotButton.Position = UDim2.fromOffset(18 + col * 164, 490 + row * 34)
+    InsuranceSlotButtons[key] = slotButton
+end
+
+local InsuranceSelectAll = button(SettingsPanel, "SELECT ALL SLOTS", function()
+    local labelByKey = {primary="PRIMARY",secondary="SIDEARM",melee="MELEE",helmet="HEAD",armor="ARMOR",bag="BAG",legs="LEGS",boots="BOOTS",ears="HEADSET"}
+    for key in pairs(InsuranceSlotSelection) do
+        InsuranceSlotSelection[key] = true
+        local b = InsuranceSlotButtons[key]
+        if b then
+            b.Text = "✓  " .. (labelByKey[key] or key:upper())
+            b.BackgroundColor3 = COLORS.blue
+        end
+    end
+    saveState()
+end, COLORS.panel3, 145, 26)
+InsuranceSelectAll.Position = UDim2.fromOffset(520,490)
+
 local SettingsFootnote = label(SettingsPanel,
-    "Settings are saved automatically when executor file APIs are available. Manual START / STOP buttons remain available.",
+    "Settings are saved automatically when executor file APIs are available. Auto Insurance only targets selected, occupied and currently uninsured slots.",
     9, COLORS.muted, false)
-SettingsFootnote.Position = UDim2.fromOffset(18,426)
-SettingsFootnote.Size = UDim2.new(1,-36,0,32)
+SettingsFootnote.Position = UDim2.fromOffset(18,588)
+SettingsFootnote.Size = UDim2.new(1,-36,0,16)
 SettingsFootnote.TextWrapped = true
 SettingsFootnote.TextYAlignment = Enum.TextYAlignment.Top
 
