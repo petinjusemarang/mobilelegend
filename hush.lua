@@ -1606,6 +1606,75 @@ local AimConfig = {
 }
 
 local AimZombies = workspace:WaitForChild("HushLocal"):WaitForChild("Zombies")
+
+--==================================================
+-- OVERTURE ZOMBIE GLOW
+-- HIGHLIGHT ALL CURRENT + NEW ZOMBIES
+--==================================================
+local ZombieGlowConfig = {
+    Enabled = true,
+    FillColor = Color3.fromRGB(70, 255, 115),
+    OutlineColor = Color3.fromRGB(235, 255, 235),
+    FillTransparency = 0.68,
+    OutlineTransparency = 0,
+    AlwaysOnTop = true
+}
+
+local ZombieHighlights = {}
+
+local function applyZombieGlow(zombie)
+    if not ZombieGlowConfig.Enabled
+        or not zombie
+        or zombie == AimZombies
+        or not zombie:IsA("Model") then
+        return
+    end
+
+    local existing = ZombieHighlights[zombie]
+    if existing and existing.Parent then return end
+
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "OvertureZombieGlow"
+    highlight.Adornee = zombie
+    highlight.FillColor = ZombieGlowConfig.FillColor
+    highlight.OutlineColor = ZombieGlowConfig.OutlineColor
+    highlight.FillTransparency = ZombieGlowConfig.FillTransparency
+    highlight.OutlineTransparency = ZombieGlowConfig.OutlineTransparency
+    highlight.DepthMode = ZombieGlowConfig.AlwaysOnTop
+        and Enum.HighlightDepthMode.AlwaysOnTop
+        or Enum.HighlightDepthMode.Occluded
+    highlight.Parent = zombie
+
+    ZombieHighlights[zombie] = highlight
+end
+
+local function clearZombieGlow()
+    for zombie, highlight in pairs(ZombieHighlights) do
+        if highlight then
+            pcall(function() highlight:Destroy() end)
+        end
+        ZombieHighlights[zombie] = nil
+    end
+end
+
+if ZombieGlowConfig.Enabled then
+    for _, zombie in ipairs(AimZombies:GetChildren()) do
+        applyZombieGlow(zombie)
+    end
+
+    track(AimZombies.ChildAdded:Connect(function(zombie)
+        applyZombieGlow(zombie)
+    end))
+
+    track(AimZombies.ChildRemoved:Connect(function(zombie)
+        local highlight = ZombieHighlights[zombie]
+        if highlight then
+            pcall(function() highlight:Destroy() end)
+            ZombieHighlights[zombie] = nil
+        end
+    end))
+end
+
 local AimHoldingRMB = false
 local AimLockedZombie = nil
 local AimLockedHead = nil
@@ -1824,6 +1893,7 @@ local function cleanup()
     running = false
     AimHoldingRMB = false
     aimReleaseTarget("OVERTURE UNLOADED")
+    clearZombieGlow()
     if AimCircle then
         pcall(function() AimCircle:Remove() end)
         AimCircle = nil
