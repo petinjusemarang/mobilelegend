@@ -1,5 +1,5 @@
 repeat task.wait() until game:IsLoaded()
-do
+task.spawn(function()
 repeat task.wait() until game:IsLoaded()
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -573,7 +573,7 @@ gui.Parent = guiParent
 local main = Instance.new("Frame")
 main.Name = "Main"
 main.Size = UDim2.fromOffset(350, 470)
-main.Position = UDim2.new(0.5, -175, 0.5, -235)
+main.Position = UDim2.new(1, -365, 0.5, -235) -- pindah ke sisi kanan, tidak menutupi tengah layar
 main.BackgroundColor3 = Color3.fromRGB(18, 21, 29)
 main.BackgroundTransparency = 0.22
 local autoLootScale = Instance.new("UIScale")
@@ -986,7 +986,7 @@ task.defer(function()
     end
 end)
 log("HUSH AUTO LOOT v1.7 loaded")
-end
+end)
 do
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -1650,7 +1650,7 @@ task.spawn(function()
     local old = playerGui:FindFirstChild("HushUltimateHub")
     if old then old:Destroy() end
     local lootGui, overtureGui
-    for _ = 1, 40 do
+    for _ = 1, 1200 do -- wait up to 5 minutes for inventory UI
         lootGui = findLootGui()
         overtureGui = findOvertureGui()
         if lootGui and overtureGui then break end
