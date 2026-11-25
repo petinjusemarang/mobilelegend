@@ -1583,9 +1583,251 @@ track(zoomInput.FocusLost:Connect(function()
         )
     end
 end))
+
+--==================================================
+-- OVERTURE INTEGRATED HEAD LOCK
+-- RMB HOLD | HEAD PRIORITY | STICKY TARGET
+-- NO EXTRA GUI
+--==================================================
+local AimConfig = {
+    Enabled = true,
+    FOV = 80,
+    MaxDistance = 1000,
+    AimPart = "Head",
+    LockMouse = true,
+    ShowFOV = true,
+    CorpseFilter = true,
+    StickyLock = true,
+    OffsetX = 30,
+    OffsetY = 65,
+    ZoomScale = 1,
+    ReferenceZoom = 159.32,
+    Debug = false
+}
+
+local AimZombies = workspace:WaitForChild("HushLocal"):WaitForChild("Zombies")
+local AimHoldingRMB = false
+local AimLockedZombie = nil
+local AimLockedHead = nil
+local AimCircle = nil
+
+local AimMoveMouse = (typeof(mousemoveabs) == "function" and mousemoveabs)
+    or (typeof(getgenv) == "function"
+        and typeof(getgenv().mousemoveabs) == "function"
+        and getgenv().mousemoveabs)
+    or nil
+
+local AimGuiService = game:GetService("GuiService")
+
+local function aimGetZoomDistance(camera)
+    if not camera then return 0 end
+    local character = Player.Character
+    local root = character and (
+        character:FindFirstChild("HumanoidRootPart")
+        or character:FindFirstChild("Head")
+    )
+    if root and root:IsA("BasePart") then
+        return (camera.CFrame.Position - root.Position).Magnitude
+    end
+    if AimLockedHead and AimLockedHead.Parent then
+        return (camera.CFrame.Position - AimLockedHead.Position).Magnitude
+    end
+    return 0
+end
+
+local function aimGetEffectiveOffset(camera)
+    local zoomDistance = aimGetZoomDistance(camera)
+    local factor = 1
+    if AimConfig.ZoomScale ~= 1
+        and AimConfig.ReferenceZoom > 0
+        and zoomDistance > 0 then
+        local ratio = zoomDistance / AimConfig.ReferenceZoom
+        factor = 1 + (ratio - 1) * (AimConfig.ZoomScale - 1)
+    end
+    return Vector2.new(
+        AimConfig.OffsetX * factor,
+        AimConfig.OffsetY * factor
+    )
+end
+
+local function aimGetScreenCenter(camera)
+    if not camera then return Vector2.zero end
+    local inset = AimGuiService:GetGuiInset()
+    if UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter then
+        return Vector2.new(
+            camera.ViewportSize.X * 0.5 + inset.X,
+            camera.ViewportSize.Y * 0.5 + inset.Y
+        )
+    end
+    return UserInputService:GetMouseLocation()
+end
+
+local function aimGetHeadScreenPosition(head, camera)
+    if not camera or not head or not head.Parent then return nil end
+    local position, visible = camera:WorldToScreenPoint(head.Position)
+    if not visible or position.Z <= 0 then return nil end
+    local offset = aimGetEffectiveOffset(camera)
+    return Vector2.new(position.X + offset.X, position.Y + offset.Y)
+end
+
+local function aimMoveMouse(screenPosition)
+    if not AimConfig.LockMouse or not AimMoveMouse or not screenPosition then
+        return
+    end
+    pcall(function()
+        AimMoveMouse(math.round(screenPosition.X), math.round(screenPosition.Y))
+    end)
+end
+
+local function aimGetHead(zombie)
+    if not zombie or not zombie.Parent then return nil end
+    local head = zombie:FindFirstChild(AimConfig.AimPart)
+    if head and head:IsA("BasePart") then return head end
+    return nil
+end
+
+local function aimIsAlive(zombie)
+    if not zombie or not zombie.Parent then return false end
+    if AimConfig.CorpseFilter and zombie:GetAttribute("Corpse") == true then
+        return false
+    end
+    local humanoid = zombie:FindFirstChildOfClass("Humanoid")
+    if not humanoid or humanoid.Health <= 0 then return false end
+    if humanoid:GetState() == Enum.HumanoidStateType.Dead then return false end
+    return aimGetHead(zombie) ~= nil
+end
+
+local function aimAcquireTarget(aimPosition, camera)
+    if not camera then return nil, nil end
+    local bestZombie, bestHead = nil, nil
+    local bestDistance = AimConfig.FOV
+
+    for _, zombie in ipairs(AimZombies:GetChildren()) do
+        if aimIsAlive(zombie) then
+            local head = aimGetHead(zombie)
+            if head then
+                local worldDistance =
+                    (head.Position - camera.CFrame.Position).Magnitude
+                if worldDistance <= AimConfig.MaxDistance then
+                    local screenPosition =
+                        aimGetHeadScreenPosition(head, camera)
+                    if screenPosition then
+                        local distance = (screenPosition - aimPosition).Magnitude
+                        if distance < bestDistance then
+                            bestDistance = distance
+                            bestZombie = zombie
+                            bestHead = head
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return bestZombie, bestHead
+end
+
+local function aimIsTargetValid(camera)
+    if not AimLockedZombie or not AimLockedHead or not camera then
+        return false
+    end
+    if not aimIsAlive(AimLockedZombie) then return false end
+    if aimGetHead(AimLockedZombie) ~= AimLockedHead then return false end
+    return (AimLockedHead.Position - camera.CFrame.Position).Magnitude
+        <= AimConfig.MaxDistance
+end
+
+local function aimReleaseTarget(reason)
+    if AimLockedZombie and AimConfig.Debug then
+        print("[OVERTURE AIM] RELEASE:", reason)
+    end
+    AimLockedZombie = nil
+    AimLockedHead = nil
+end
+
+local function aimLockTarget(zombie, head)
+    AimLockedZombie = zombie
+    AimLockedHead = head
+    if AimConfig.Debug then
+        print("[OVERTURE AIM] LOCKED:", zombie.Name)
+    end
+end
+
+if Drawing and Drawing.new and AimConfig.ShowFOV then
+    pcall(function()
+        AimCircle = Drawing.new("Circle")
+        AimCircle.Visible = false
+        AimCircle.Radius = AimConfig.FOV
+        AimCircle.Thickness = 1.5
+        AimCircle.NumSides = 64
+        AimCircle.Filled = false
+        AimCircle.Color = Color3.fromRGB(255, 255, 255)
+        AimCircle.Transparency = 1
+    end)
+end
+
+track(UserInputService.InputBegan:Connect(function(input, processed)
+    if processed or not running or not AimConfig.Enabled then return end
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then
+        AimHoldingRMB = true
+        local camera = workspace.CurrentCamera
+        local aimPosition = aimGetScreenCenter(camera)
+        local zombie, head = aimAcquireTarget(aimPosition, camera)
+        if zombie and head then
+            aimLockTarget(zombie, head)
+        else
+            aimReleaseTarget("NO TARGET IN FOV")
+        end
+    end
+end))
+
+track(UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then
+        AimHoldingRMB = false
+        aimReleaseTarget("RMB RELEASED")
+    end
+end))
+
+track(RunService.RenderStepped:Connect(function()
+    if not running then return end
+    local camera = workspace.CurrentCamera
+    if not camera then return end
+
+    local aimPosition = aimGetScreenCenter(camera)
+    if AimCircle then
+        AimCircle.Position = aimPosition
+        AimCircle.Radius = AimConfig.FOV
+        AimCircle.Visible = AimConfig.Enabled and AimConfig.ShowFOV
+    end
+
+    if not AimConfig.Enabled or not AimHoldingRMB then return end
+
+    if not AimConfig.StickyLock or not aimIsTargetValid(camera) then
+        local zombie, head = aimAcquireTarget(aimPosition, camera)
+        if zombie and head then
+            aimLockTarget(zombie, head)
+        else
+            aimReleaseTarget("TARGET LOST")
+            return
+        end
+    end
+
+    local lockPosition = aimGetHeadScreenPosition(AimLockedHead, camera)
+    if lockPosition then
+        aimMoveMouse(lockPosition)
+    end
+end))
+
+print("[OVERTURE AIM] Integrated head lock loaded | Hold RMB")
+
 local function cleanup()
     if not running then return end
     running = false
+    AimHoldingRMB = false
+    aimReleaseTarget("OVERTURE UNLOADED")
+    if AimCircle then
+        pcall(function() AimCircle:Remove() end)
+        AimCircle = nil
+    end
     if forceDayNoSnowEnabled then
         restoreEnvironment()
     end
