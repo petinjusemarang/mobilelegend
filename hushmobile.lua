@@ -1221,11 +1221,29 @@ local WatchScroll = make("ScrollingFrame", {
     BackgroundColor3=COLORS.bg, Position=UDim2.fromOffset(10,40),
     Size=UDim2.new(1,-20,1,-50), BorderSizePixel=0,
     ScrollBarThickness=5, ScrollBarImageColor3=COLORS.accent,
-    AutomaticCanvasSize=Enum.AutomaticSize.Y, CanvasSize=UDim2.new(0,0,0,0),
+    AutomaticCanvasSize=Enum.AutomaticSize.None,
+    CanvasSize=UDim2.new(0,0,0,0),
+    ScrollingDirection=Enum.ScrollingDirection.Y,
+    ScrollingEnabled=true, Active=true,
+    ElasticBehavior=Enum.ElasticBehavior.WhenScrollable,
 }, WatchPanel)
 addCorner(WatchScroll, 7)
-make("UIListLayout", {Padding=UDim.new(0,6), SortOrder=Enum.SortOrder.LayoutOrder}, WatchScroll)
-make("UIPadding", {PaddingTop=UDim.new(0,6),PaddingBottom=UDim.new(0,6),PaddingLeft=UDim.new(0,6),PaddingRight=UDim.new(0,6)}, WatchScroll)
+local WatchLayout = make("UIListLayout", {
+    Padding=UDim.new(0,6), SortOrder=Enum.SortOrder.LayoutOrder,
+}, WatchScroll)
+make("UIPadding", {
+    PaddingTop=UDim.new(0,6), PaddingBottom=UDim.new(0,6),
+    PaddingLeft=UDim.new(0,6), PaddingRight=UDim.new(0,6),
+}, WatchScroll)
+
+-- Use the actual list content height instead of relying on AutomaticCanvasSize.
+-- This keeps the last watchlist card reachable on both touch and desktop.
+local function updateWatchCanvas()
+    if not WatchScroll or not WatchScroll.Parent then return end
+    local contentHeight = WatchLayout.AbsoluteContentSize.Y + 12
+    WatchScroll.CanvasSize = UDim2.new(0,0,0,math.max(contentHeight, WatchScroll.AbsoluteSize.Y))
+end
+WatchLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(updateWatchCanvas)
 
 local RightMarket = make("Frame", {
     BackgroundTransparency=1, Position=UDim2.new(0.58,7,0,0),
@@ -1311,7 +1329,8 @@ function refreshWatchlist()
         local result = Results[item.id] or {}
         local card = make("Frame", {
             BackgroundColor3=COLORS.panel2,
-            Size=UDim2.new(1,-4,0,MobileLayout and 120 or 86),
+            -- Mobile action buttons end at Y=121, so leave a small bottom margin.
+            Size=UDim2.new(1,-4,0,MobileLayout and 128 or 86),
             BorderSizePixel=0,
             LayoutOrder=index,
         }, WatchScroll)
@@ -1456,6 +1475,8 @@ function refreshWatchlist()
             end)
         end
     end
+
+    task.defer(updateWatchCanvas)
 end
 
 function refreshIDList()
@@ -1836,6 +1857,8 @@ if MobileLayout then
     WatchScroll.ScrollingDirection=Enum.ScrollingDirection.Y
     WatchScroll.ScrollingEnabled=true
     WatchScroll.Active=true
+    WatchScroll.AutomaticCanvasSize=Enum.AutomaticSize.None
+    task.defer(updateWatchCanvas)
 
     GridPanel.Position=UDim2.fromOffset(0,330)
     GridPanel.Size=UDim2.new(1,0,0,390)
