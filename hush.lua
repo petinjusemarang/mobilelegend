@@ -1626,20 +1626,14 @@ local AimZombies = workspace:WaitForChild("HushLocal"):WaitForChild("Zombies")
 --==================================================
 local ZombieGlowConfig = {
     Enabled = true,
-    -- Shootable (clear line of sight)
-    ShootableFillColor = Color3.fromRGB(255, 55, 55),
-    ShootableOutlineColor = Color3.fromRGB(255, 220, 220),
-    -- Not shootable (blocked line of sight)
-    BlockedFillColor = Color3.fromRGB(70, 255, 115),
-    BlockedOutlineColor = Color3.fromRGB(220, 255, 230),
+    FillColor = Color3.fromRGB(70, 255, 115),
+    OutlineColor = Color3.fromRGB(235, 255, 235),
     FillTransparency = 0.68,
     OutlineTransparency = 0,
-    AlwaysOnTop = true,
-    LOSRefreshInterval = 0.15
+    AlwaysOnTop = true
 }
 
 local ZombieHighlights = {}
-local ZombieVisibility = {}
 
 local function applyZombieGlow(zombie)
     if not ZombieGlowConfig.Enabled
@@ -1655,8 +1649,8 @@ local function applyZombieGlow(zombie)
     local highlight = Instance.new("Highlight")
     highlight.Name = "OvertureZombieGlow"
     highlight.Adornee = zombie
-    highlight.FillColor = ZombieGlowConfig.BlockedFillColor
-    highlight.OutlineColor = ZombieGlowConfig.BlockedOutlineColor
+    highlight.FillColor = ZombieGlowConfig.FillColor
+    highlight.OutlineColor = ZombieGlowConfig.OutlineColor
     highlight.FillTransparency = ZombieGlowConfig.FillTransparency
     highlight.OutlineTransparency = ZombieGlowConfig.OutlineTransparency
     highlight.DepthMode = ZombieGlowConfig.AlwaysOnTop
@@ -1673,63 +1667,6 @@ local function clearZombieGlow()
             pcall(function() highlight:Destroy() end)
         end
         ZombieHighlights[zombie] = nil
-        ZombieVisibility[zombie] = nil
-    end
-end
-
--- Checks whether the camera has an unobstructed ray to the zombie.
--- The player's own character is excluded; hitting any part of the target
--- itself counts as visible.
-local function zombieHasLineOfSight(zombie, head, camera)
-    if not zombie or not zombie.Parent or not head or not head.Parent or not camera then
-        return false
-    end
-
-    local origin = camera.CFrame.Position
-    local direction = head.Position - origin
-    if direction.Magnitude <= 0.01 then
-        return true
-    end
-
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    params.FilterDescendantsInstances = Player.Character and {Player.Character} or {}
-    params.IgnoreWater = true
-
-    local result = workspace:Raycast(origin, direction, params)
-    return result == nil or result.Instance:IsDescendantOf(zombie)
-end
-
-local function setZombieVisibility(zombie, visible)
-    ZombieVisibility[zombie] = visible
-
-    local highlight = ZombieHighlights[zombie]
-    if not highlight or not highlight.Parent then return end
-
-    if visible then
-        highlight.FillColor = ZombieGlowConfig.ShootableFillColor
-        highlight.OutlineColor = ZombieGlowConfig.ShootableOutlineColor
-    else
-        highlight.FillColor = ZombieGlowConfig.BlockedFillColor
-        highlight.OutlineColor = ZombieGlowConfig.BlockedOutlineColor
-    end
-end
-
-local function updateZombieVisibility(camera)
-    if not camera then return end
-
-    for _, zombie in ipairs(AimZombies:GetChildren()) do
-        if zombie:IsA("Model") then
-            local head = zombie:FindFirstChild(AimConfig.AimPart)
-            if head and head:IsA("BasePart") then
-                setZombieVisibility(
-                    zombie,
-                    zombieHasLineOfSight(zombie, head, camera)
-                )
-            else
-                setZombieVisibility(zombie, false)
-            end
-        end
     end
 end
 
@@ -1748,7 +1685,6 @@ if ZombieGlowConfig.Enabled then
             pcall(function() highlight:Destroy() end)
             ZombieHighlights[zombie] = nil
         end
-        ZombieVisibility[zombie] = nil
     end))
 end
 
@@ -1851,7 +1787,7 @@ local function aimAcquireTarget(aimPosition, camera)
     for _, zombie in ipairs(AimZombies:GetChildren()) do
         if aimIsAlive(zombie) then
             local head = aimGetHead(zombie)
-            if head and zombieHasLineOfSight(zombie, head, camera) then
+            if head then
                 local worldDistance =
                     (head.Position - camera.CFrame.Position).Magnitude
                 if worldDistance <= AimConfig.MaxDistance then
@@ -1878,9 +1814,6 @@ local function aimIsTargetValid(camera)
     end
     if not aimIsAlive(AimLockedZombie) then return false end
     if aimGetHead(AimLockedZombie) ~= AimLockedHead then return false end
-    if not zombieHasLineOfSight(AimLockedZombie, AimLockedHead, camera) then
-        return false
-    end
     return (AimLockedHead.Position - camera.CFrame.Position).Magnitude
         <= AimConfig.MaxDistance
 end
@@ -1936,19 +1869,10 @@ track(UserInputService.InputEnded:Connect(function(input)
     end
 end))
 
-local lastLOSRefresh = 0
-
 track(RunService.RenderStepped:Connect(function()
     if not running then return end
     local camera = workspace.CurrentCamera
     if not camera then return end
-
-    local now = os.clock()
-    if ZombieGlowConfig.Enabled
-        and now - lastLOSRefresh >= ZombieGlowConfig.LOSRefreshInterval then
-        lastLOSRefresh = now
-        updateZombieVisibility(camera)
-    end
 
     local aimPosition = aimGetScreenCenter(camera)
     if AimCircle then
