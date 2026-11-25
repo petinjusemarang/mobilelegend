@@ -112,6 +112,12 @@ local SeenPurchaseText = setmetatable({}, {__mode="k"})
 local PurchaseConnections = {}
 local AntiAFKConnection
 
+-- Auto Sell UI references / view state
+local AutoSellStatus, AutoSellList, AutoSellListLayout
+local AutoSellSearch, AutoSellScanTab, AutoSellWatchTab
+local AutoSellCurrentView = "SCAN"
+local scanSellInventory, renderAutoSellList, setAutoSellView
+
 --==================================================
 -- PERSISTENCE
 --==================================================
@@ -1071,7 +1077,7 @@ local Brand = label(Top, "HUSH  /  CONTROL CENTER", 18, COLORS.text, true)
 Brand.Position = UDim2.fromOffset(24, 8)
 Brand.Size = UDim2.new(0, 420, 0, 28)
 
-local BrandSub = label(Top, "MARKET INTELLIGENCE  •  NPC AUTO BUY  /  15-MINUTE CYCLE", 10, COLORS.muted, false)
+local BrandSub = label(Top, "MARKET INTELLIGENCE  •  NPC AUTO BUY  •  SCRAPPER AUTO SELL", 10, COLORS.muted, false)
 BrandSub.Position = UDim2.fromOffset(25, 36)
 BrandSub.Size = UDim2.new(0, 500, 0, 18)
 
@@ -1118,7 +1124,7 @@ local Tabs = make("Frame", {
 }, Body)
 
 local function makeTab(text, x)
-    local b = button(Tabs, text, function() end, COLORS.panel2, 210, 38)
+    local b = button(Tabs, text, function() end, COLORS.panel2, 204, 38)
     b.Position = UDim2.fromOffset(x,0)
     return b
 end
@@ -1127,6 +1133,7 @@ local HomeTab = makeTab("⌂  HOME", 0)
 local MarketTab = makeTab("◈  AUTO SNIPE MARKET", 220)
 local NPCTab = makeTab("◉  AUTO BUY FROM NPC", 440)
 local SettingsTab = makeTab("⚙  SETTINGS", 660)
+local AutoSellTab = makeTab("♻  AUTO SELL", 880)
 
 local PageArea = make("Frame", {
     BackgroundTransparency=1, Position=UDim2.fromOffset(0,54),
@@ -1149,6 +1156,10 @@ local SettingsPage = make("Frame", {
     BackgroundTransparency=1, Size=UDim2.fromScale(1,1), Visible=false,
 }, PageArea)
 
+local AutoSellPage = make("Frame", {
+    BackgroundTransparency=1, Size=UDim2.fromScale(1,1), Visible=false,
+}, PageArea)
+
 local syncNPCFromGameLabel -- assigned after NPC timer UI is created
 
 local function showTab(which)
@@ -1156,14 +1167,17 @@ local function showTab(which)
     local market = which == "MARKET"
     local npc = which == "NPC"
     local settings = which == "SETTINGS"
+    local autoSell = which == "AUTOSELL"
     HomePage.Visible = home
     MarketPage.Visible = market
     NPCPage.Visible = npc
     SettingsPage.Visible = settings
+    AutoSellPage.Visible = autoSell
     HomeTab.BackgroundColor3 = home and COLORS.accent or COLORS.panel2
     MarketTab.BackgroundColor3 = market and COLORS.accent or COLORS.panel2
     NPCTab.BackgroundColor3 = npc and COLORS.accent or COLORS.panel2
     SettingsTab.BackgroundColor3 = settings and COLORS.accent or COLORS.panel2
+    AutoSellTab.BackgroundColor3 = autoSell and COLORS.accent or COLORS.panel2
 
     -- Do not resync the NPC timer when switching tabs; its deadline stays stable.
 end
@@ -1171,6 +1185,72 @@ HomeTab.Activated:Connect(function() showTab("HOME") end)
 MarketTab.Activated:Connect(function() showTab("MARKET") end)
 NPCTab.Activated:Connect(function() showTab("NPC") end)
 SettingsTab.Activated:Connect(function() showTab("SETTINGS") end)
+AutoSellTab.Activated:Connect(function() showTab("AUTOSELL") end)
+
+--==================================================
+-- AUTO SELL PAGE UI
+--==================================================
+
+local AutoSellHeader = make("Frame", {
+    BackgroundColor3=COLORS.panel, Size=UDim2.new(1,0,0,72),
+    BorderSizePixel=0,
+}, AutoSellPage)
+addCorner(AutoSellHeader, 9)
+
+local AutoSellTitle = label(AutoSellHeader, "SCRAPPER AUTO SELL", 16, COLORS.text, true)
+AutoSellTitle.Position = UDim2.fromOffset(16,9)
+AutoSellTitle.Size = UDim2.new(0.55,0,0,24)
+
+AutoSellStatus = label(AutoSellHeader, "AUTO SELL  STARTING...", 10, COLORS.orange, true)
+AutoSellStatus.Position = UDim2.fromOffset(16,39)
+AutoSellStatus.Size = UDim2.new(1,-32,0,20)
+
+AutoSellSearch = textbox(AutoSellPage, "Search scanned items / sell list...", 430)
+AutoSellSearch.Position = UDim2.fromOffset(0,84)
+AutoSellSearch.Size = UDim2.fromOffset(430,34)
+
+local AutoSellScanNow = button(AutoSellPage, "SCAN NOW", function()
+    scanSellInventory()
+    renderAutoSellList()
+end, COLORS.blue, 110, 34)
+AutoSellScanNow.Position = UDim2.fromOffset(442,84)
+
+AutoSellScanTab = button(AutoSellPage, "SCAN RESULTS", function()
+    setAutoSellView("SCAN")
+end, COLORS.accent, 150, 34)
+AutoSellScanTab.Position = UDim2.fromOffset(562,84)
+
+AutoSellWatchTab = button(AutoSellPage, "SELL LIST", function()
+    setAutoSellView("SELL LIST")
+end, COLORS.panel2, 130, 34)
+AutoSellWatchTab.Position = UDim2.fromOffset(722,84)
+
+AutoSellList = make("ScrollingFrame", {
+    Position=UDim2.fromOffset(0,128),
+    Size=UDim2.new(1,0,1,-128),
+    BackgroundColor3=COLORS.panel,
+    BorderSizePixel=0,
+    ScrollBarThickness=5,
+    ScrollBarImageColor3=COLORS.accent,
+    CanvasSize=UDim2.new(0,0,0,0),
+    AutomaticCanvasSize=Enum.AutomaticSize.None,
+}, AutoSellPage)
+addCorner(AutoSellList, 9)
+
+AutoSellListLayout = make("UIListLayout", {
+    Padding=UDim.new(0,5),
+    SortOrder=Enum.SortOrder.LayoutOrder,
+}, AutoSellList)
+make("UIPadding", {
+    PaddingTop=UDim.new(0,7),
+    PaddingBottom=UDim.new(0,7),
+    PaddingLeft=UDim.new(0,7),
+    PaddingRight=UDim.new(0,7),
+}, AutoSellList)
+
+AutoSellSearch:GetPropertyChangedSignal("Text"):Connect(function()
+    renderAutoSellList()
+end)
 
 --==================================================
 -- HOME PAGE UI
@@ -2050,6 +2130,356 @@ end
 
 watchPurchaseContainer(PlayerGui)
 
+
+--==================================================
+-- AUTO SELL MODULE (MERGED)
+--==================================================
+
+local AutoSellConfig = {
+    ScanInterval = 1,
+    SellDelay = 0.15,
+    FileName = "HushAutoSell_Watchlist.json",
+    ReqMap = {
+        ["Gold Coin Collection"] = 2,
+        ["Motherboard"] = 2,
+        ["Jewelry Box"] = 6,
+    },
+}
+
+local AutoSellState = {
+    Running = false,
+    Scanning = false,
+    Selling = false,
+    Items = {},
+    Watchlist = {},
+    Search = "",
+    Logs = {},
+}
+
+local function saveAutoSellWatchlist()
+    if type(writefile) ~= "function" then return end
+    pcall(function()
+        writefile(AutoSellConfig.FileName, HttpService:JSONEncode(AutoSellState.Watchlist))
+    end)
+end
+
+local function loadAutoSellWatchlist()
+    if type(readfile) ~= "function" or type(isfile) ~= "function" then return end
+    local ok, data = pcall(function()
+        if not isfile(AutoSellConfig.FileName) then return {} end
+        return HttpService:JSONDecode(readfile(AutoSellConfig.FileName))
+    end)
+    if ok and type(data) == "table" then
+        AutoSellState.Watchlist = data
+    end
+end
+loadAutoSellWatchlist()
+
+local function autoSellLog(message)
+    local line = "[" .. os.date("%H:%M:%S") .. "] " .. tostring(message)
+    table.insert(AutoSellState.Logs, 1, line)
+    while #AutoSellState.Logs > 40 do table.remove(AutoSellState.Logs) end
+    addLog(message, "AUTO SELL")
+end
+
+local function getSellMenu()
+    local ok, result = pcall(function()
+        local scripts = Player:WaitForChild("PlayerScripts", 20)
+        local client = scripts and scripts:WaitForChild("HushClient", 20)
+        local controllers = client and client:WaitForChild("Controllers", 20)
+        local module = controllers and controllers:WaitForChild("Menu", 20)
+        if not module then error("Menu module not ready") end
+        return require(module)
+    end)
+    if ok then return result end
+    autoSellLog("Menu module not ready: " .. tostring(result))
+    return nil
+end
+
+local SellMenu = nil
+
+local function waitForCharacterTab(timeout)
+    local started = os.clock()
+    while os.clock() - started < (timeout or 60) do
+        local hush = PlayerGui:FindFirstChild("HushMenu")
+        local root = hush and hush:FindFirstChild("Root")
+        local top = root and root:FindFirstChild("TopBar")
+        local tabs = top and top:FindFirstChild("Tabs")
+        local characterTab = tabs and tabs:FindFirstChild("Tab_character")
+        if characterTab then return true end
+        task.wait(0.25)
+    end
+    return false
+end
+
+local function openCharacterInventory()
+    if not SellMenu then SellMenu = getSellMenu() end
+    if not SellMenu or type(SellMenu.openStash) ~= "function" then
+        autoSellLog("Menu.openStash unavailable")
+        return false
+    end
+    local ok, result = pcall(function()
+        return SellMenu.openStash()
+    end)
+    if ok and result == true then
+        autoSellLog("Character inventory opened")
+        return true
+    end
+    autoSellLog("openStash did not confirm success: " .. tostring(result))
+    return false
+end
+
+local function findSellInventoryCells()
+    local hushMenu = PlayerGui:FindFirstChild("HushMenu")
+    local root = hushMenu and hushMenu:FindFirstChild("Root")
+    local pages = root and root:FindFirstChild("Pages")
+    local characterPage = pages and pages:FindFirstChild("Page_character")
+    local area = characterPage and characterPage:FindFirstChild("Area")
+    local body = area and area:FindFirstChild("Body")
+    local inventory = body and body:FindFirstChild("Inventory")
+    local inventoryUI = inventory and inventory:FindFirstChild("HushInventoryUI")
+    local uiBody = inventoryUI and inventoryUI:FindFirstChild("Body")
+    local columns = uiBody and uiBody:FindFirstChild("Columns")
+    local loot = columns and columns:FindFirstChild("Loot")
+    local content = loot and loot:FindFirstChild("Content")
+    local scroll = content and content:FindFirstChild("Scroll")
+    local stash = scroll and scroll:FindFirstChild("Section_stash")
+    local grid = stash and stash:FindFirstChild("Grid_stash")
+    return grid and grid:FindFirstChild("Cells")
+end
+
+local function getSellItemName(item)
+    local direct = item:FindFirstChild("Name", true)
+        or item:FindFirstChild("ItemName", true)
+        or item:FindFirstChild("Short", true)
+    if direct and (direct:IsA("TextLabel") or direct:IsA("TextButton"))
+        and direct.Text and direct.Text ~= "" then
+        return direct.Text
+    end
+
+    for _, attributeName in ipairs({"ItemName", "DisplayName", "Name"}) do
+        local value = item:GetAttribute(attributeName)
+        if type(value) == "string" and value ~= "" then return value end
+    end
+
+    for _, obj in ipairs(item:GetDescendants()) do
+        if obj:IsA("TextLabel") or obj:IsA("TextButton") then
+            if type(obj.Text) == "string" and obj.Text ~= "" then return obj.Text end
+        end
+    end
+    return nil
+end
+
+local function getSellUID(item)
+    local uid = item.Name:match("^Item_(.+)$")
+    if uid then return uid end
+    local attributeUID = item:GetAttribute("UID")
+    if type(attributeUID) == "string" and attributeUID ~= "" then return attributeUID end
+    return nil
+end
+
+scanSellInventory = function()
+    if AutoSellState.Scanning then return false end
+    AutoSellState.Scanning = true
+
+    local ok, groupedOrError = pcall(function()
+        local cells = findSellInventoryCells()
+        if not cells then error("Character inventory cells not mounted") end
+
+        local grouped = {}
+        for _, item in ipairs(cells:GetChildren()) do
+            local uid = getSellUID(item)
+            local name = getSellItemName(item)
+            if uid and name then
+                if not grouped[name] then
+                    grouped[name] = {Name=name, UIDs={}, Count=0}
+                end
+                table.insert(grouped[name].UIDs, uid)
+                grouped[name].Count += 1
+            end
+        end
+        return grouped
+    end)
+
+    if ok and type(groupedOrError) == "table" then
+        AutoSellState.Items = groupedOrError
+        if AutoSellStatus then
+            local total = 0
+            for _, item in pairs(groupedOrError) do total += item.Count end
+            AutoSellStatus.Text = "AUTO SELL  ON  •  " .. total .. " ITEMS SCANNED"
+            AutoSellStatus.TextColor3 = COLORS.green
+        end
+    else
+        autoSellLog("Inventory scan: " .. tostring(groupedOrError))
+        if AutoSellStatus then
+            AutoSellStatus.Text = "WAITING FOR CHARACTER INVENTORY"
+            AutoSellStatus.TextColor3 = COLORS.orange
+        end
+    end
+
+    AutoSellState.Scanning = false
+    return ok
+end
+
+local function addSellWatch(name)
+    AutoSellState.Watchlist[name] = true
+    saveAutoSellWatchlist()
+    autoSellLog("Added to sell list: " .. name)
+end
+
+local function removeSellWatch(name)
+    AutoSellState.Watchlist[name] = nil
+    saveAutoSellWatchlist()
+    autoSellLog("Removed from sell list: " .. name)
+end
+
+local function sellWatchedGroup(itemName)
+    if AutoSellState.Selling then return false end
+    local item = AutoSellState.Items[itemName]
+    if not item or #item.UIDs == 0 then return false end
+
+    local req = AutoSellConfig.ReqMap[itemName]
+    if not req then
+        autoSellLog("Skipped " .. itemName .. " — req mapping is not confirmed")
+        return false
+    end
+
+    AutoSellState.Selling = true
+    local sent, failed = 0, 0
+
+    for _, uid in ipairs(item.UIDs) do
+        if not AutoSellState.Running then break end
+        local ok, err = pcall(function()
+            MenuOp:FireServer({
+                trader="scrapper",
+                uids={uid},
+                op="sell",
+                req=req,
+            })
+        end)
+        if ok then
+            sent += 1
+        else
+            failed += 1
+            warn("[HushAutoSell] Sell request failed:", uid, err)
+        end
+        task.wait(AutoSellConfig.SellDelay)
+    end
+
+    AutoSellState.Selling = false
+    autoSellLog(itemName .. " | Requests: " .. sent .. " | Failed: " .. failed)
+    task.wait(0.2)
+    scanSellInventory()
+    return true
+end
+
+local function startAutoSell()
+    if AutoSellState.Running then return end
+    AutoSellState.Running = true
+    autoSellLog("Auto Sell enabled")
+
+    task.spawn(function()
+        while AutoSellState.Running and ScreenGui and ScreenGui.Parent do
+            scanSellInventory()
+
+            if AutoSellState.Running then
+                local names = {}
+                for name, enabled in pairs(AutoSellState.Watchlist) do
+                    if enabled == true then table.insert(names, name) end
+                end
+                table.sort(names)
+
+                for _, itemName in ipairs(names) do
+                    if not AutoSellState.Running then break end
+                    local item = AutoSellState.Items[itemName]
+                    if item and item.Count > 0 then
+                        sellWatchedGroup(itemName)
+                        task.wait(0.25)
+                    end
+                end
+            end
+
+            task.wait(AutoSellConfig.ScanInterval)
+        end
+    end)
+end
+
+renderAutoSellList = function()
+    if not AutoSellList then return end
+    for _, child in ipairs(AutoSellList:GetChildren()) do
+        if child:IsA("Frame") then child:Destroy() end
+    end
+
+    local source = AutoSellCurrentView == "SELL LIST"
+        and AutoSellState.Watchlist or AutoSellState.Items
+    local names = {}
+    for name, value in pairs(source) do
+        local include = AutoSellCurrentView == "SELL LIST"
+            and value == true
+            or AutoSellCurrentView == "SCAN" and type(value) == "table"
+        if include and (AutoSellSearch.Text == ""
+            or string.find(string.lower(name), string.lower(AutoSellSearch.Text), 1, true)) then
+            table.insert(names, name)
+        end
+    end
+    table.sort(names)
+
+    for index, name in ipairs(names) do
+        local scanned = AutoSellState.Items[name]
+        local count = scanned and scanned.Count or 0
+        local row = make("Frame", {
+            BackgroundColor3=COLORS.panel2,
+            Size=UDim2.new(1,-8,0,52),
+            LayoutOrder=index,
+            BorderSizePixel=0,
+        }, AutoSellList)
+        addCorner(row, 7)
+
+        local title = label(row, name, 11, COLORS.text, true)
+        title.Position = UDim2.fromOffset(10,5)
+        title.Size = UDim2.new(1,-150,0,20)
+
+        local detail = label(row, "SCANNED COUNT  " .. count
+            .. (AutoSellConfig.ReqMap[name] and "  •  REQ " .. AutoSellConfig.ReqMap[name]
+                or "  •  REQ NOT MAPPED"), 9, COLORS.muted, false)
+        detail.Position = UDim2.fromOffset(10,27)
+        detail.Size = UDim2.new(1,-150,0,17)
+
+        local watched = AutoSellState.Watchlist[name] == true
+        local action = button(row,
+            AutoSellCurrentView == "SELL LIST" and "REMOVE" or (watched and "IN SELL LIST" or "ADD TO SELL"),
+            function()
+                if AutoSellCurrentView == "SELL LIST" or watched then
+                    removeSellWatch(name)
+                else
+                    addSellWatch(name)
+                end
+                renderAutoSellList()
+            end,
+            watched and COLORS.red or COLORS.green, 118, 30)
+        action.Position = UDim2.new(1,-128,0.5,-15)
+    end
+
+    if #names == 0 then
+        local empty = label(AutoSellList,
+            AutoSellCurrentView == "SELL LIST" and "Sell list is empty — add items from SCAN."
+                or "No scanned items. Press SCAN NOW.",
+            11, COLORS.muted, false)
+        empty.Position = UDim2.fromOffset(10,10)
+        empty.Size = UDim2.new(1,-20,0,28)
+    end
+
+    AutoSellList.CanvasSize = UDim2.new(0,0,0,AutoSellListLayout.AbsoluteContentSize.Y + 12)
+end
+
+setAutoSellView = function(view)
+    AutoSellCurrentView = view
+    AutoSellScanTab.BackgroundColor3 = view == "SCAN" and COLORS.accent or COLORS.panel2
+    AutoSellWatchTab.BackgroundColor3 = view == "SELL LIST" and COLORS.accent or COLORS.panel2
+    renderAutoSellList()
+end
+
+
 --==================================================
 -- STARTUP / AUTO REFRESH
 --==================================================
@@ -2121,6 +2551,22 @@ end
 -- Start once after the complete interface has been created.
 runInitialStartup()
 
+-- Auto Sell always starts on execution. Wait for the actual Character tab first
+-- so the inventory module is ready before opening and scanning it.
+task.spawn(function()
+    while ScreenGui and ScreenGui.Parent and not AutoSellState.Running do
+        local ready = waitForCharacterTab(8)
+        if ready and openCharacterInventory() then
+            task.wait(1.5)
+            scanSellInventory()
+            renderAutoSellList()
+            startAutoSell()
+            break
+        end
+        task.wait(2)
+    end
+end)
+
 task.spawn(function()
     task.wait(2)
     scanMarketGrid()
@@ -2139,6 +2585,7 @@ task.spawn(function()
 end)
 
 ScreenGui.Destroying:Connect(function()
+    AutoSellState.Running = false
     stopMarketMonitor()
     stopNPCMonitor()
     AntiAFKEnabled=false
