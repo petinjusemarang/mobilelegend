@@ -1167,7 +1167,7 @@ local gui = create("ScreenGui", {
 }, PlayerGui)
 local main = create("Frame", {
     Name = "Main",
-    Size = UDim2.fromOffset(270, 270),
+    Size = UDim2.fromOffset(270, 225),
     Position = UDim2.new(0, 22, 0.35, 0),
     BackgroundColor3 = Theme.Background,
     BackgroundTransparency = 0.22,
@@ -1190,13 +1190,24 @@ local header = create("Frame", {
 local title = create("TextLabel", {
     BackgroundTransparency = 1,
     Position = UDim2.fromOffset(13, 0),
-    Size = UDim2.new(1, -60, 1, 0),
+    Size = UDim2.new(1, -118, 1, 0),
     Font = Enum.Font.GothamBold,
     Text = "OVERTURE MAP HELPER",
     TextSize = 12,
     TextColor3 = Theme.Accent,
     TextXAlignment = Enum.TextXAlignment.Left
 }, header)
+local aimToggle = create("TextButton", {
+    Position = UDim2.fromOffset(168, 7),
+    Size = UDim2.fromOffset(62, 23),
+    BackgroundColor3 = Theme.Accent,
+    BorderSizePixel = 0,
+    Text = "AIM: ON",
+    TextColor3 = Theme.Text,
+    Font = Enum.Font.GothamBold,
+    TextSize = 9
+}, header)
+round(aimToggle, 5)
 local closeButton = create("TextButton", {
     Position = UDim2.new(1, -31, 0, 7),
     Size = UDim2.fromOffset(23, 23),
@@ -1286,7 +1297,7 @@ local zoomStatus = create("TextLabel", {
 }, main)
 local waypointStatus = create("TextLabel", {
     BackgroundTransparency = 1,
-    Position = UDim2.fromOffset(13, 245),
+    Position = UDim2.fromOffset(13, 190),
     Size = UDim2.new(1, -26, 0, 17),
     Font = Enum.Font.Gotham,
     Text = "WAYPOINT: WAITING...",
@@ -1603,7 +1614,7 @@ end))
 -- NO EXTRA GUI
 --==================================================
 local AimConfig = {
-    Enabled = false,
+    Enabled = true,
     FOV = 80,
     MaxDistance = 1000,
     AimPart = "Head",
@@ -1617,33 +1628,6 @@ local AimConfig = {
     ReferenceZoom = 159.32,
     Debug = false
 }
-
--- Aimlock ON/OFF control in the existing Overture GUI.
-local _, aimToggle = makeRow(205, "AIMLOCK (HOLD RMB)", "OFF")
-local aimStatus = create("TextLabel", {
-    BackgroundTransparency = 1,
-    Position = UDim2.fromOffset(13, 228),
-    Size = UDim2.new(1, -26, 0, 15),
-    Font = Enum.Font.Gotham,
-    Text = "AIM: DISABLED",
-    TextSize = 9,
-    TextColor3 = Theme.Muted,
-    TextXAlignment = Enum.TextXAlignment.Left
-}, main)
-
-local AimHoldingRMB = false
-local aimReleaseTarget
-
-local function setAimEnabled(enabled)
-    AimConfig.Enabled = enabled
-    if not enabled then
-        AimHoldingRMB = false
-        aimReleaseTarget("AIMLOCK DISABLED")
-    end
-    updateToggle(aimToggle, enabled, "ON", "OFF")
-    aimStatus.Text = enabled and "AIM: ENABLED | HOLD RMB TO LOCK" or "AIM: DISABLED"
-    aimStatus.TextColor3 = enabled and Theme.Accent or Theme.Muted
-end
 
 local AimZombies = workspace:WaitForChild("HushLocal"):WaitForChild("Zombies")
 
@@ -1715,6 +1699,7 @@ if ZombieGlowConfig.Enabled then
     end))
 end
 
+local AimHoldingRMB = false
 local AimLockedZombie = nil
 local AimLockedHead = nil
 local AimCircle = nil
@@ -1844,13 +1829,23 @@ local function aimIsTargetValid(camera)
         <= AimConfig.MaxDistance
 end
 
-aimReleaseTarget = function(reason)
+local function aimReleaseTarget(reason)
     if AimLockedZombie and AimConfig.Debug then
         print("[OVERTURE AIM] RELEASE:", reason)
     end
     AimLockedZombie = nil
     AimLockedHead = nil
 end
+
+track(aimToggle.MouseButton1Click:Connect(function()
+    AimConfig.Enabled = not AimConfig.Enabled
+    if not AimConfig.Enabled then
+        AimHoldingRMB = false
+        aimReleaseTarget("AIM DISABLED")
+    end
+    updateToggle(aimToggle, AimConfig.Enabled, "AIM: ON", "AIM: OFF")
+end))
+updateToggle(aimToggle, AimConfig.Enabled, "AIM: ON", "AIM: OFF")
 
 local function aimLockTarget(zombie, head)
     AimLockedZombie = zombie
@@ -1872,11 +1867,6 @@ if Drawing and Drawing.new and AimConfig.ShowFOV then
         AimCircle.Transparency = 1
     end)
 end
-
-track(aimToggle.MouseButton1Click:Connect(function()
-    setAimEnabled(not AimConfig.Enabled)
-end))
-setAimEnabled(AimConfig.Enabled)
 
 track(UserInputService.InputBegan:Connect(function(input, processed)
     if processed or not running or not AimConfig.Enabled then return end
