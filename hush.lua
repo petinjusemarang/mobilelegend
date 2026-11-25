@@ -694,12 +694,24 @@ itemScroll.Position = UDim2.fromOffset(8, 31)
 itemScroll.Size = UDim2.fromOffset(314, 255)
 itemScroll.BackgroundColor3 = Color3.fromRGB(18, 21, 28)
 itemScroll.BorderSizePixel = 0
-itemScroll.ScrollBarThickness = 4
-itemScroll.CanvasSize = UDim2.new()
+itemScroll.ScrollBarThickness = 5
+itemScroll.Active = true
+itemScroll.ScrollingEnabled = true
+itemScroll.ScrollingDirection = Enum.ScrollingDirection.Y
+itemScroll.ElasticBehavior = Enum.ElasticBehavior.WhenScrollable
+itemScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+itemScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+itemScroll.ClipsDescendants = true
 itemScroll.Parent = itemsPage
 local itemLayout = Instance.new("UIListLayout")
 itemLayout.Padding = UDim.new(0, 3)
+itemLayout.SortOrder = Enum.SortOrder.LayoutOrder
 itemLayout.Parent = itemScroll
+itemLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    itemScroll.CanvasSize = UDim2.fromOffset(
+        0, itemLayout.AbsoluteContentSize.Y + 12
+    )
+end)
 local saveButton = button(itemsPage, "SAVE PERMANENT",
     8, 304, 150, 32, Color3.fromRGB(45, 110, 80))
 local clearList = button(itemsPage, "CLEAR LIST",
@@ -795,9 +807,10 @@ local function renderList()
             updateStats()
         end)
     end
+    -- Refresh canvas after rebuilding whitelist rows.
     task.defer(function()
         itemScroll.CanvasSize = UDim2.fromOffset(
-            0, itemLayout.AbsoluteContentSize.Y + 5
+            0, itemLayout.AbsoluteContentSize.Y + 12
         )
     end)
     updateStats()
