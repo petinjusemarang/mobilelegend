@@ -172,7 +172,7 @@ else
         for _, ammo in ipairs(ammoList) do
             local savedEnabled = SavedState.ammoEnabled[ammo.offer]
             if type(savedEnabled) == "boolean" then
-                ammo.enabled = ammo.required and true or savedEnabled
+                ammo.enabled = savedEnabled
             end
         end
     end
@@ -1895,12 +1895,12 @@ local AmmoAllOn = button(AmmoPanel,"ALL ON",function()
 end,COLORS.green,72,26)
 AmmoAllOn.Position=UDim2.new(1,-164,0,7)
 
-local AmmoAllOff = button(AmmoPanel,"OPTIONAL OFF",function()
-    for _, ammo in ipairs(ammoList) do ammo.enabled = ammo.required == true end
+local AmmoAllOff = button(AmmoPanel,"ALL OFF",function()
+    for _, ammo in ipairs(ammoList) do ammo.enabled = false end
     saveState()
     refreshAmmoSelectionUI()
     refreshAmmoRows()
-    addLog("Optional ammo disabled; required 12GA remains ON", "NPC CONFIG")
+    addLog("All NPC ammo types set to OFF", "NPC CONFIG")
 end,COLORS.red,72,26)
 AmmoAllOff.Position=UDim2.new(1,-84,0,7)
 
@@ -1923,8 +1923,8 @@ function refreshAmmoRows()
             local toggle = row:FindFirstChild("Toggle")
             local itemLabel = row:FindFirstChild("AmmoName")
             if toggle then
-                toggle.Text = ammo.required and "WAJIB" or (ammo.enabled and "ON" or "OFF")
-                toggle.BackgroundColor3 = ammo.required and COLORS.orange or (ammo.enabled and COLORS.green or COLORS.red)
+                toggle.Text = ammo.enabled and "ON" or "OFF"
+                toggle.BackgroundColor3 = ammo.enabled and COLORS.green or COLORS.red
             end
             if itemLabel then
                 itemLabel.TextColor3 = ammo.enabled and COLORS.text or COLORS.muted
@@ -1943,33 +1943,25 @@ for i, ammo in ipairs(ammoList) do
     AmmoRows[ammo.offer] = row
 
     local group = ammo.offer == "cola" and "SCRAPPER" or (i <= 5 and "12GA" or ".308")
-    local t = label(row,string.format("%02d   %s   •   %s",i,group,ammo.offer),10,COLORS.text,true)
+    local displayName = ammo.offer .. (ammo.required and " - PENTING" or "")
+    local t = label(row,string.format("%02d   %s   •   %s",i,group,displayName),10,COLORS.text,true)
     t.Name = "AmmoName"
     t.Position=UDim2.fromOffset(9,0)
     t.Size=UDim2.new(1,-235,1,0)
 
     local detailText = "COUNT "..ammo.count.."   /   REQ "..ammo.req
-    if ammo.required then
-        detailText = detailText .. "   •   WAJIB DIBELI"
-    elseif ammo.offer == "cola" then
-        detailText = detailText .. "   •   OPTIONAL"
-    end
-    local detail = label(row,detailText,9,ammo.required and COLORS.orange or COLORS.muted,true)
+    local detail = label(row,detailText,9,COLORS.muted,true)
     detail.Position=UDim2.new(1,-265,0,0)
     detail.Size=UDim2.fromOffset(170,34)
     detail.TextXAlignment=Enum.TextXAlignment.Right
 
-    local toggle = button(row,ammo.required and "WAJIB" or (ammo.enabled and "ON" or "OFF"),function()
-        if ammo.required then
-            addLog(ammo.offer .. " is mandatory and cannot be disabled", "NPC CONFIG")
-            return
-        end
+    local toggle = button(row,ammo.enabled and "ON" or "OFF",function()
         ammo.enabled = not ammo.enabled
         saveState()
         refreshAmmoSelectionUI()
         refreshAmmoRows()
         addLog(ammo.offer .. " set to " .. (ammo.enabled and "ON" or "OFF"), "NPC CONFIG")
-    end,ammo.required and COLORS.orange or (ammo.enabled and COLORS.green or COLORS.red),72,26)
+    end,ammo.enabled and COLORS.green or COLORS.red,72,26)
     toggle.Name = "Toggle"
     toggle.AnchorPoint = Vector2.new(1,0.5)
     toggle.Position = UDim2.new(1,-7,0.5,0)
