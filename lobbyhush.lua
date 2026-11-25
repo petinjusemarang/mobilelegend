@@ -2153,21 +2153,12 @@ watchPurchaseContainer(PlayerGui)
 --==================================================
 
 local AutoSellConfig = {
-    ScanInterval = 1,
+    ScanInterval = 2,
     SellDelay = 0.15,
     FileName = "HushAutoSell_Watchlist.json",
-    ReqMap = {
-        -- Confirmed full item names from the original HUSH AUTO SELL v1.0.
-        ["Gold Coin Collection"] = 2,
-        ["Motherboard"] = 2,
-        ["Jewelry Box"] = 6,
-
-        -- Inventory UI labels shown in the current scanner.
-        -- These are aliases for the same three confirmed item types above.
-        ["GOLD COINS"] = 2, -- Gold Coin Collection
-        ["BOARD"] = 2,      -- Motherboard
-        ["JEWELRY"] = 6,    -- Jewelry Box
-    },
+    -- TEST MODE: Scrapper sell requests intentionally omit the `req` field.
+    -- The server may reject this payload if req is mandatory.
+    OmitReq = true,
 }
 
 local AutoSellSellAllBusy = false
@@ -2391,24 +2382,19 @@ local function sellWatchedGroup(itemName, manual)
     local item = AutoSellState.Items[itemName]
     if not item or #item.UIDs == 0 then return false end
 
-    local req = AutoSellConfig.ReqMap[itemName]
-    if not req then
-        autoSellLog("Skipped " .. itemName .. " — req mapping is not confirmed")
-        return false
-    end
-
     AutoSellState.Selling = true
     local sent, failed = 0, 0
 
     for _, uid in ipairs(item.UIDs) do
         if not manual and (not AutoSellState.Running or not AutoSellEnabled) then break end
         local ok, err = pcall(function()
-            MenuOp:FireServer({
+            local payload = {
                 trader="scrapper",
                 uids={uid},
                 op="sell",
-                req=req,
-            })
+            }
+            -- Intentionally do not attach `req` in this test version.
+            MenuOp:FireServer(payload)
         end)
         if ok then
             sent += 1
@@ -2428,79 +2414,121 @@ end
 
 requestSellAllFromHome = function()
     if AutoSellState.Selling or AutoSellSellAllBusy then
-        autoSellLog("Sell All is already running.")
+        autoSellLog("SELL ALL is already running.")
         return
     end
 
     AutoSellSellAllBusy = true
-    HomeSellAllButton.Text = "PREPARING..."
+    HomeSellAllButton.Text = "SCANNING..."
     HomeSellAllButton.Active = false
     HomeSellAllButton.AutoButtonColor = false
 
     task.spawn(function()
-        autoSellLog("Manual SELL ALL started.")
-        local opened = false
-
-        -- Navigate to Character inventory and retry briefly in case the game
-        -- is still transitioning between menus.
-        for attempt = 1, 6 do
-            if not ScreenGui or not ScreenGui.Parent then break end
-            if openCharacterInventory() then
-                opened = true
-                break
-            end
-            task.wait(1)
-        end
-
-        if not opened then
-            autoSellLog("SELL ALL stopped: could not open Character inventory.")
+        local function finishSellAll()
             AutoSellSellAllBusy = false
             HomeSellAllButton.Text = "SELL ALL"
             HomeSellAllButton.Active = true
             HomeSellAllButton.AutoButtonColor = true
+            renderAutoSellList()
+        end
+
+        autoSellLog("SELL ALL: opening Character inventory...")
+        local opened = false
+
+        for attempt = 1, 8 do
+            if not ScreenGui or not ScreenGui.Parent then
+                finishSellAll()
+                return
+            end
+
+            if openCharacterInventory() then
+                opened = true
+                break
+            end
+            task.wait(0.75)
+        end
+
+        if not opened then
+            autoSellLog("SELL ALL cancelled: Character inventory could not be opened.")
+            finishSellAll()
             return
         end
 
-        task.wait(1)
-        local scanOk = scanSellInventory()
-        if not scanOk then
-            autoSellLog("SELL ALL stopped: inventory scan failed.")
-        else
-            local names = {}
-            for name, enabled in pairs(AutoSellState.Watchlist) do
-                if enabled == true then
-                    table.insert(names, name)
-                end
-            end
-            table.sort(names)
-
-            if #names == 0 then
-                autoSellLog("SELL ALL: Sell List is empty.")
-            else
-                local soldGroups, skippedGroups = 0, 0
-                for _, itemName in ipairs(names) do
-                    local item = AutoSellState.Items[itemName]
-                    if item and item.Count > 0 then
-                        local req = AutoSellConfig.ReqMap[itemName]
-                        if req then
-                            local ok = sellWatchedGroup(itemName, true)
-                            if ok then soldGroups += 1 else skippedGroups += 1 end
-                            task.wait(0.3)
-                        else
-                            skippedGroups += 1
-                            autoSellLog("SELL ALL skipped " .. itemName .. ": req mapping unavailable.")
-                        end
-                    end
-                end
-                autoSellLog("SELL ALL finished | groups sent: " .. soldGroups .. " | skipped: " .. skippedGroups)
-            end
+        -- Wait for any background scan already in progress to finish.
+        local waitStarted = os.clock()
+        while AutoSellState.Scanning and os.clock() - waitStarted < 8 do
+            task.wait(0.1)
         end
 
-        AutoSellSellAllBusy = false
-        HomeSellAllButton.Text = "SELL ALL"
-        HomeSellAllButton.Active = true
-        HomeSellAllButton.AutoButtonColor = true
-        renderAutoSellList()
+        -- First fresh scan: only after this do we read the current Sell List.
+        task.wait(0.5)
+        local scanOK = scanSellInventory()
+        if not scanOK then
+            autoSellLog("SELL ALL cancelled: fresh inventory scan failed.")
+            finishSellAll()
+            return
+        end
+
+        local sellNames = {}
+        for itemName, enabled in pairs(AutoSellState.Watchlist) do
+            if enabled == true then
+                table.insert(sellNames, itemName)
+            end
+        end
+        table.sort(sellNames)
+
+        if #sellNames == 0 then
+            autoSellLog("SELL ALL: Sell List is empty.")
+            finishSellAll()
+            return
+        end
+
+        autoSellLog("SELL ALL: fresh scan complete; checking " .. #sellNames .. " Sell List entries.")
+        HomeSellAllButton.Text = "SELLING 0/" .. #sellNames
+
+        local groupsSent, groupsSkipped, requestsSent = 0, 0, 0
+
+        for index, itemName in ipairs(sellNames) do
+            if not ScreenGui or not ScreenGui.Parent then break end
+
+            -- Wait until any pending operation is clear, then refresh inventory
+            -- so UIDs from before the raid or a previous sale are never reused.
+            while AutoSellState.Scanning or AutoSellState.Selling do
+                task.wait(0.1)
+            end
+
+            local freshOK = scanSellInventory()
+            if not freshOK then
+                groupsSkipped += 1
+                autoSellLog("SELL ALL skipped " .. itemName .. ": could not refresh inventory.")
+            else
+                local currentItem = AutoSellState.Items[itemName]
+
+                if not currentItem or currentItem.Count <= 0 or #currentItem.UIDs == 0 then
+                    autoSellLog("SELL ALL: " .. itemName .. " is no longer in inventory.")
+                    groupsSkipped += 1
+                else
+                    local beforeCount = #currentItem.UIDs
+                    local sentOK = sellWatchedGroup(itemName, true)
+                    if sentOK then
+                        groupsSent += 1
+                        requestsSent += beforeCount
+                    else
+                        groupsSkipped += 1
+                    end
+                end
+            end
+
+            HomeSellAllButton.Text = "SELLING " .. index .. "/" .. #sellNames
+            task.wait(0.25)
+        end
+
+        autoSellLog(
+            "SELL ALL finished | groups sent: " .. groupsSent
+            .. " | requests sent: " .. requestsSent
+            .. " | skipped: " .. groupsSkipped
+        )
+        finishSellAll()
     end)
 end
 
@@ -2511,7 +2539,9 @@ local function startAutoSell()
 
     task.spawn(function()
         while AutoSellState.Running and ScreenGui and ScreenGui.Parent do
-            scanSellInventory()
+            if not AutoSellSellAllBusy then
+                scanSellInventory()
+            end
 
             if AutoSellStatus then
                 local total = 0
@@ -2584,8 +2614,7 @@ renderAutoSellList = function()
         title.Size = UDim2.new(1,-150,0,20)
 
         local detail = label(row, "SCANNED COUNT  " .. count
-            .. (AutoSellConfig.ReqMap[name] and "  •  REQ " .. AutoSellConfig.ReqMap[name]
-                or "  •  REQ NOT MAPPED"), 9, COLORS.muted, false)
+            .. "  •  REQ OMITTED (TEST MODE)", 9, COLORS.muted, false)
         detail.Position = UDim2.fromOffset(10,27)
         detail.Size = UDim2.new(1,-150,0,17)
 
@@ -2635,6 +2664,7 @@ showTab("HOME")
 addLog("Hush Control Center initialized", "SYSTEM")
 addLog("Market API: menu.get / bmItem; buy op: bmBuyBest", "SYSTEM")
 addLog("NPC queue loaded: 5x 12GA + 6x .308", "SYSTEM")
+addLog("Auto Sell test mode: Scrapper payload omits req", "AUTO SELL")
 
 -- Startup automation:
 -- Every execution (whether currently in lobby or in a map):
