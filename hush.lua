@@ -1167,7 +1167,7 @@ local gui = create("ScreenGui", {
 }, PlayerGui)
 local main = create("Frame", {
     Name = "Main",
-    Size = UDim2.fromOffset(270, 225),
+    Size = UDim2.fromOffset(270, 270),
     Position = UDim2.new(0, 22, 0.35, 0),
     BackgroundColor3 = Theme.Background,
     BackgroundTransparency = 0.22,
@@ -1286,7 +1286,7 @@ local zoomStatus = create("TextLabel", {
 }, main)
 local waypointStatus = create("TextLabel", {
     BackgroundTransparency = 1,
-    Position = UDim2.fromOffset(13, 190),
+    Position = UDim2.fromOffset(13, 245),
     Size = UDim2.new(1, -26, 0, 17),
     Font = Enum.Font.Gotham,
     Text = "WAYPOINT: WAITING...",
@@ -1603,7 +1603,7 @@ end))
 -- NO EXTRA GUI
 --==================================================
 local AimConfig = {
-    Enabled = true,
+    Enabled = false,
     FOV = 80,
     MaxDistance = 1000,
     AimPart = "Head",
@@ -1617,6 +1617,30 @@ local AimConfig = {
     ReferenceZoom = 159.32,
     Debug = false
 }
+
+-- Aimlock ON/OFF control in the existing Overture GUI.
+local _, aimToggle = makeRow(205, "AIMLOCK (HOLD RMB)", "OFF")
+local aimStatus = create("TextLabel", {
+    BackgroundTransparency = 1,
+    Position = UDim2.fromOffset(13, 228),
+    Size = UDim2.new(1, -26, 0, 15),
+    Font = Enum.Font.Gotham,
+    Text = "AIM: DISABLED",
+    TextSize = 9,
+    TextColor3 = Theme.Muted,
+    TextXAlignment = Enum.TextXAlignment.Left
+}, main)
+
+local function setAimEnabled(enabled)
+    AimConfig.Enabled = enabled
+    if not enabled then
+        AimHoldingRMB = false
+        aimReleaseTarget("AIMLOCK DISABLED")
+    end
+    updateToggle(aimToggle, enabled, "ON", "OFF")
+    aimStatus.Text = enabled and "AIM: ENABLED | HOLD RMB TO LOCK" or "AIM: DISABLED"
+    aimStatus.TextColor3 = enabled and Theme.Accent or Theme.Muted
+end
 
 local AimZombies = workspace:WaitForChild("HushLocal"):WaitForChild("Zombies")
 
@@ -1846,6 +1870,11 @@ if Drawing and Drawing.new and AimConfig.ShowFOV then
         AimCircle.Transparency = 1
     end)
 end
+
+track(aimToggle.MouseButton1Click:Connect(function()
+    setAimEnabled(not AimConfig.Enabled)
+end))
+setAimEnabled(AimConfig.Enabled)
 
 track(UserInputService.InputBegan:Connect(function(input, processed)
     if processed or not running or not AimConfig.Enabled then return end
