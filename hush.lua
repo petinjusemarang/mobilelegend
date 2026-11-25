@@ -1631,6 +1631,9 @@ local aimStatus = create("TextLabel", {
     TextXAlignment = Enum.TextXAlignment.Left
 }, main)
 
+local AimHoldingRMB = false
+local aimReleaseTarget
+
 local function setAimEnabled(enabled)
     AimConfig.Enabled = enabled
     if not enabled then
@@ -1712,7 +1715,6 @@ if ZombieGlowConfig.Enabled then
     end))
 end
 
-local AimHoldingRMB = false
 local AimLockedZombie = nil
 local AimLockedHead = nil
 local AimCircle = nil
@@ -1842,7 +1844,7 @@ local function aimIsTargetValid(camera)
         <= AimConfig.MaxDistance
 end
 
-local function aimReleaseTarget(reason)
+aimReleaseTarget = function(reason)
     if AimLockedZombie and AimConfig.Debug then
         print("[OVERTURE AIM] RELEASE:", reason)
     end
